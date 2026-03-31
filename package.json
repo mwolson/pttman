@@ -1,0 +1,20 @@
+{
+  "name": "pttman",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "fix:md": "prettier --write '**/*.md'",
+    "fix:md:file": "prettier --write",
+    "format:file": "prettier --write",
+    "hooks:pre-commit": "lefthook run pre-commit",
+    "hooks:pre-commit:all": "lefthook run pre-commit --all-files",
+    "init": "bun run up && bun run init:hooks",
+    "init:hooks": "lefthook install",
+    "test": "python3 -m unittest discover -s tests -v",
+    "up": "bun install"
+  },
+  "devDependencies": {
+    "lefthook": "^2.1.4",
+    "prettier": "^3.8.1"
+  }
+}
