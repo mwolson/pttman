@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+
+
+def main():
+    require_commands(["wpctl"])
+
+    args = parse_args()
+    action = args.action or "toggle"
+
+    if action == "daemon":
+        run_daemon()
+        return
+
+    if action == "status":
+        print_status()
+        return
+
+    send_or_run_action(action)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        prog="pttman",
+        description="Push-to-talk microphone control with a daemon-backed command queue.",
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--daemon", action="store_const", const="daemon", dest="action")
+    group.add_argument("--mute", "--release", action="store_const", const="mute", dest="action")
+    group.add_argument("--unmute", "--press", "--talk", action="store_const", const="unmute", dest="action")
+    group.add_argument("--toggle", action="store_const", const="toggle", dest="action")
+    group.add_argument("--status", action="store_const", const="status", dest="action")
+    return parser.parse_args()
+
+
+def require_commands(commands):
+    missing = [command for command in commands if not shutil.which(command)]
+    if missing:
+        for command in missing:
+            print(f"Error: '{command}' is required but not found in PATH.", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_daemon():
+    socket_path = get_socket_path()
+    cleanup_socket(socket_path)
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    server.bind(socket_path)
+
+    def handle_exit(_signum, _frame):
+        cleanup_socket(socket_path)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
+
+    print(f"pttman daemon listening on {socket_path}")
+    try:
+        while True:
+            try:
+                data = server.recv(64)
+                command = coalesce_commands(server, decode_command(data))
+                run_action(command)
+            except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+                print(f"Warning: {exc}", file=sys.stderr)
+    finally:
+        server.close()
+        cleanup_socket(socket_path)
+
+
+def send_or_run_action(action):
+    try:
+        send_action(action)
+    except OSError as exc:
+        print(f"Warning: daemon unavailable, running '{action}' directly ({exc}).", file=sys.stderr)
+        run_action(action)
+
+
+def send_action(action):
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        client.sendto(action.encode(), get_socket_path())
+    finally:
+        client.close()
+
+
+def coalesce_commands(server, initial_command):
+    effective = initial_command
+    server.setblocking(False)
+    try:
+        while True:
+            try:
+                effective = decode_command(server.recv(64))
+            except ValueError as exc:
+                print(f"Warning: {exc}", file=sys.stderr)
+    except BlockingIOError:
+        return effective
+    finally:
+        server.setblocking(True)
+
+
+def decode_command(data):
+    command = data.decode().strip()
+    if command not in {"mute", "toggle", "unmute"}:
+        raise ValueError(f"Unsupported action: {command}")
+    return command
+
+
+def run_action(action):
+    if action == "mute":
+        set_mute_all(True)
+        return
+    if action == "unmute":
+        set_mute_all(False)
+        return
+    if action == "toggle":
+        toggle_all()
+        return
+    raise ValueError(f"Unsupported action: {action}")
+
+
+def get_audio_source_ids():
+    output = subprocess.check_output(["wpctl", "status"], text=True)
+    in_audio = False
+    in_sources = False
+    ids = []
+    for line in output.splitlines():
+        if line.startswith("Audio"):
+            in_audio = True
+            continue
+        if re.match(r"^[A-Z]", line):
+            in_audio = False
+            in_sources = False
+            continue
+        if in_audio and "Sources:" in line:
+            in_sources = True
+            continue
+        if in_audio and in_sources and re.match(r"^\s*[├└│].*:$", line):
+            in_sources = False
+            continue
+        if in_audio and in_sources:
+            match = re.search(r"[\s*]+(\d+)\.", line)
+            if match:
+                ids.append(match.group(1))
+
+    ids.append("@DEFAULT_AUDIO_SOURCE@")
+
+    deduped_ids = []
+    seen = set()
+    for source_id in ids:
+        if source_id in seen:
+            continue
+        seen.add(source_id)
+        deduped_ids.append(source_id)
+    return deduped_ids
+
+
+def set_mute_all(mute):
+    value = "1" if mute else "0"
+    for source_id in get_audio_source_ids() or ["@DEFAULT_AUDIO_SOURCE@"]:
+        subprocess.run(["wpctl", "set-mute", source_id, value], check=True)
+
+
+def toggle_all():
+    for source_id in get_audio_source_ids() or ["@DEFAULT_AUDIO_SOURCE@"]:
+        subprocess.run(["wpctl", "set-mute", source_id, "toggle"], check=True)
+
+
+def print_status():
+    for source_id in get_audio_source_ids() or ["@DEFAULT_AUDIO_SOURCE@"]:
+        try:
+            volume = subprocess.check_output(
+                ["wpctl", "get-volume", source_id],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError:
+            continue
+        state = "muted" if "[MUTED]" in volume else "unmuted"
+        display_id = get_default_source_name() if source_id == "@DEFAULT_AUDIO_SOURCE@" else source_id
+        print(f"source {display_id}: {state}")
+
+
+def get_default_source_name():
+    if not shutil.which("pactl"):
+        return "@DEFAULT_AUDIO_SOURCE@"
+    try:
+        output = subprocess.check_output(
+            ["pactl", "get-default-source"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return "@DEFAULT_AUDIO_SOURCE@"
+    return output.strip() or "@DEFAULT_AUDIO_SOURCE@"
+
+
+def get_socket_path():
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return os.path.join(runtime_dir, "pttman.sock")
+
+
+def cleanup_socket(socket_path):
+    try:
+        if os.path.exists(socket_path):
+            os.unlink(socket_path)
+    except FileNotFoundError:
+        pass
+
+
+if __name__ == "__main__":
+    main()
