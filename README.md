@@ -107,3 +107,7 @@ lefthook run pre-commit --all-files
 
 The pre-commit hook runs `uvx ruff check`, `uvx ty check`, and the unit test
 suite.
+
+## License
+
+MIT
