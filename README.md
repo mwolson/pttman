@@ -6,6 +6,64 @@ Push-to-talk microphone control for PipeWire and WirePlumber.
 requests over a Unix datagram socket so rapid key presses do not race each
 other.
 
+## Quickstart
+
+Install and start the user service:
+
+```bash
+git clone https://github.com/mwolson/pttman.git
+cd pttman
+./install.sh
+systemctl --user start pttman.service
+systemctl --user status pttman.service
+```
+
+Then point your push-to-talk key at the installed client binary.
+
+### xremap example
+
+This is the basic xremap setup:
+
+```yaml
+modmap:
+  - name: Push-to-talk
+    remap:
+      F5:
+        skip_key_event: true
+        press: { launch: ["/home/your-user/.local/bin/pttman", "--unmute"] }
+        release: { launch: ["/home/your-user/.local/bin/pttman", "--mute"] }
+```
+
+Pressing F5 tells the daemon to unmute. Releasing F5 tells it to mute again.
+
+You can check the current microphone state with:
+
+```bash
+pttman --status
+```
+
+### Corsair mice on Arch Linux
+
+If you use a Corsair mouse and want one of its extra buttons to behave like F5,
+`ckb-next` is a straightforward way to do it.
+
+On Arch Linux, `ckb-next` is in the official `extra` repository as of
+March 4, 2026, so the normal install is:
+
+```bash
+sudo pacman -S ckb-next
+```
+
+Then launch `ckb-next`, select your mouse, pick the button you want to use for
+push-to-talk, and remap that button to `F5`.
+
+After that, xremap can keep using the F5 rule above, and your Corsair mouse
+button will trigger push-to-talk through `pttman`.
+
+If you specifically want the upstream development build instead of the packaged
+release, the `ckb-next` project wiki also lists `ckb-next-git` for Arch-based
+systems.
+
 ## Commands
 
 ```text
@@ -21,14 +79,6 @@ Aliases:
 - `--release` for `--mute`
 - `--press` and `--talk` for `--unmute`
 
-## Installation
-
-```bash
-git clone https://github.com/mwolson/pttman.git
-cd pttman
-./install.sh
-```
-
 ## Service
 
 ```bash
@@ -40,13 +90,15 @@ journalctl --user -u pttman.service -f
 The daemon listens on `$XDG_RUNTIME_DIR/pttman.sock`. If the daemon is not
 running, client commands fall back to direct `wpctl` execution.
 
-## Testing
+## Development
+
+### Testing
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-## Hooks
+### Hooks
 
 ```bash
 lefthook install
