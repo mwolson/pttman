@@ -29,21 +29,21 @@ pre-commit:
     ruff-check:
       priority: 1
       glob:
-        - "pttman"
+        - "pttman.py"
         - "tests/*.py"
       exclude: *common_excludes
       run: uvx ruff check {staged_files}
     ty-check:
       priority: 2
       glob:
-        - "pttman"
+        - "pttman.py"
         - "tests/*.py"
       exclude: *common_excludes
       run: uvx ty check {staged_files}
     unit-tests:
       priority: 3
       glob:
-        - "pttman"
+        - "pttman.py"
         - "tests/*.py"
       exclude: *common_excludes
       run: python3 -m unittest discover -s tests -v

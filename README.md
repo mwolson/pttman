@@ -6,19 +6,40 @@ Push-to-talk microphone control for PipeWire and WirePlumber.
 requests over a Unix datagram socket so rapid key presses do not race each
 other.
 
-## Quickstart
+## Installation
 
-Install and start the user service:
+### Recommended: uv
+
+```bash
+uv tool install git+https://github.com/mwolson/pttman
+```
+
+This installs `pttman` to `~/.local/bin/`.
+
+Then install and start the systemd service:
+
+```bash
+git clone https://github.com/mwolson/pttman.git
+cd pttman
+mkdir -p ~/.config/systemd/user
+cp systemd/pttman.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now pttman.service
+```
+
+### Alternative: install.sh
 
 ```bash
 git clone https://github.com/mwolson/pttman.git
 cd pttman
 ./install.sh
 systemctl --user start pttman.service
-systemctl --user status pttman.service
 ```
 
-Then point your push-to-talk key at the installed client binary.
+This copies `pttman` to `~/.local/bin/` and installs and enables the user
+service.
+
+After installing, point your push-to-talk key at the client binary.
 
 ### xremap
 

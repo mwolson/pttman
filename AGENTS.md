@@ -14,7 +14,7 @@ Prefer to write plans in the `plans/` directory.
 
 ## Conventions
 
-- Single Python 3 script (`pttman`) containing both client and daemon.
+- Single Python 3 script (`pttman.py`) containing both client and daemon.
 - No external Python dependencies -- stdlib only.
 - Follow the existing install.sh / systemd service pattern: install the script
   to `~/.local/bin/`, install the service to `~/.config/systemd/user/`, and
@@ -28,7 +28,7 @@ Prefer to write plans in the `plans/` directory.
 
 ## Key files
 
-- `pttman` -- main script (client + daemon)
+- `pttman.py` -- main script (client + daemon)
 - `install.sh` -- installs binary + systemd service
 - `systemd/pttman.service` -- systemd user service definition
 - `plans/implementation.md` -- architecture and integration plan
@@ -84,9 +84,9 @@ bun run hooks:pre-commit:all
    git fetch --tags
    ```
 
-3. Update the version in both `package.json` and the `VERSION` constant in
-   `pttman`, then commit the version bump separately from other changes with
-   message `chore: bump version to <version>`.
+3. Update the version in `pyproject.toml`, `package.json`, and the `VERSION`
+   constant in `pttman.py`, then commit the version bump separately from other
+   changes with message `chore: bump version to <version>`.
 
 4. Ask the user what tag name they want. Provide examples based on the current
    version:

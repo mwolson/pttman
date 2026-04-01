@@ -15,7 +15,7 @@ SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 echo "Installing pttman..."
 
 mkdir -p "$BIN_DIR"
-cp "$SCRIPT_DIR/pttman" "$BIN_DIR/pttman"
+cp "$SCRIPT_DIR/pttman.py" "$BIN_DIR/pttman"
 chmod +x "$BIN_DIR/pttman"
 echo "  Installed $BIN_DIR/pttman"
 
