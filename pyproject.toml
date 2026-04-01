@@ -7,6 +7,7 @@ name = "pttman"
 version = "0.1.0"
 description = "Push-to-talk microphone control with a daemon-backed command queue"
 license = "MIT"
+readme = "README.md"
 requires-python = ">=3.9"
 
 [project.scripts]

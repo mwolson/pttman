@@ -11,7 +11,7 @@ other.
 ### Recommended: uv
 
 ```bash
-uv tool install git+https://github.com/mwolson/pttman
+uv tool install pttman
 ```
 
 This installs `pttman` to `~/.local/bin/`.
