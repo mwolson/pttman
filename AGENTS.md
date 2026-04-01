@@ -16,8 +16,9 @@ Prefer to write plans in the `plans/` directory.
 
 - Single Python 3 script (`pttman`) containing both client and daemon.
 - No external Python dependencies -- stdlib only.
-- Follow the install.sh / systemd service pattern from the `aproman` project in
-  the dotfiles repo at `~/dotfiles/utils/aproman/`.
+- Follow the existing install.sh / systemd service pattern: install the script
+  to `~/.local/bin/`, install the service to `~/.config/systemd/user/`, and
+  enable it with `systemctl --user`.
 - Keep code comments minimal. The user is a Staff Engineer.
 - Prefer top-down control flow: caller first, then callee.
 - When writing bash scripts: `#!/bin/bash`, 4-space indentation, fail-fast
