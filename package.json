@@ -2,7 +2,7 @@
   "license": "MIT",
   "name": "pttman",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.0",
   "scripts": {
     "fix:md": "prettier --write '**/*.md'",
     "fix:md:file": "prettier --write",
