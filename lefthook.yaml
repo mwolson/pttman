@@ -1,6 +1,6 @@
 .common-excludes: &common_excludes
-  - "**/__pycache__/**"
   - "**/.venv/**"
+  - "**/__pycache__/**"
 
 pre-commit:
   parallel: true

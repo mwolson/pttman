@@ -38,9 +38,9 @@ def parse_args():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--daemon", action="store_const", const="daemon", dest="action")
     group.add_argument("--mute", "--release", action="store_const", const="mute", dest="action")
-    group.add_argument("--unmute", "--press", "--talk", action="store_const", const="unmute", dest="action")
-    group.add_argument("--toggle", action="store_const", const="toggle", dest="action")
     group.add_argument("--status", action="store_const", const="status", dest="action")
+    group.add_argument("--toggle", action="store_const", const="toggle", dest="action")
+    group.add_argument("--unmute", "--press", "--talk", action="store_const", const="unmute", dest="action")
     return parser.parse_args()
 
 
