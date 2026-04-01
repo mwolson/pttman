@@ -47,8 +47,8 @@ pttman --status
 If you use a Corsair mouse and want one of its extra buttons to behave like F5,
 `ckb-next` is a straightforward way to do it.
 
-On Arch Linux, `ckb-next` is in the official `extra` repository as of
-March 4, 2026, so the normal install is:
+On Arch Linux, `ckb-next` is in the official `extra` repository as of March 4,
+2026, so the normal install is:
 
 ```bash
 sudo pacman -S ckb-next

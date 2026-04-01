@@ -7,9 +7,9 @@ F5 press and release. Rapid clicking spawns multiple concurrent processes that
 all inspect `wpctl status` and interleave `wpctl set-mute` calls, which leaves
 microphone state inconsistent.
 
-The fix is a daemon + client architecture. The daemon serializes all
-mute/unmute operations in one process, and the client becomes a fire-and-forget
-Unix datagram send.
+The fix is a daemon + client architecture. The daemon serializes all mute/unmute
+operations in one process, and the client becomes a fire-and-forget Unix
+datagram send.
 
 ## Architecture
 
