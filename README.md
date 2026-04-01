@@ -26,10 +26,11 @@ On Arch Linux, install the xremap variant that matches your desktop environment
 (only one should be installed):
 
 ```bash
+paru -S xremap-gnome-bin     # GNOME
 paru -S xremap-hyprland-bin  # Hyprland
 paru -S xremap-kde-bin       # KDE Plasma
-paru -S xremap-gnome-bin     # GNOME
-paru -S xremap-wlroots-bin   # wlroots-based compositors (niri, sway, etc.)
+paru -S xremap-niri-bin      # Niri
+paru -S xremap-wlroots-bin   # wlroots-based compositors (sway, etc.)
 ```
 
 Then configure a push-to-talk key binding:
