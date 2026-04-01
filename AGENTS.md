@@ -20,6 +20,8 @@ Prefer to write plans in the `plans/` directory.
   to `~/.local/bin/`, install the service to `~/.config/systemd/user/`, and
   enable it with `systemctl --user`.
 - Keep code comments minimal.
+- When making changes to data in existing code, try to keep things in
+  alphabetical order when it's reasonable to do so.
 - Prefer top-down control flow: caller first, then callee.
 - When writing bash scripts: `#!/bin/bash`, 4-space indentation, fail-fast
   dependency checks.
