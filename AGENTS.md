@@ -19,7 +19,7 @@ Prefer to write plans in the `plans/` directory.
 - Follow the existing install.sh / systemd service pattern: install the script
   to `~/.local/bin/`, install the service to `~/.config/systemd/user/`, and
   enable it with `systemctl --user`.
-- Keep code comments minimal. The user is a Staff Engineer.
+- Keep code comments minimal.
 - Prefer top-down control flow: caller first, then callee.
 - When writing bash scripts: `#!/bin/bash`, 4-space indentation, fail-fast
   dependency checks.
