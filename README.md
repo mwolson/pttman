@@ -20,9 +20,19 @@ systemctl --user status pttman.service
 
 Then point your push-to-talk key at the installed client binary.
 
-### xremap example
+### xremap
 
-This is the basic xremap setup:
+On Arch Linux, install the xremap variant that matches your desktop environment
+(only one should be installed):
+
+```bash
+paru -S xremap-hyprland-bin  # Hyprland
+paru -S xremap-kde-bin       # KDE Plasma
+paru -S xremap-gnome-bin     # GNOME
+paru -S xremap-wlroots-bin   # wlroots-based compositors (niri, sway, etc.)
+```
+
+Then configure a push-to-talk key binding:
 
 ```yaml
 modmap:
