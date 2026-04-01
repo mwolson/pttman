@@ -9,6 +9,8 @@ import socket
 import subprocess
 import sys
 
+VERSION = "0.0.1"
+
 
 def main():
     require_commands(["wpctl"])
@@ -32,6 +34,7 @@ def parse_args():
         prog="pttman",
         description="Push-to-talk microphone control with a daemon-backed command queue.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--daemon", action="store_const", const="daemon", dest="action")
     group.add_argument("--mute", "--release", action="store_const", const="mute", dest="action")
