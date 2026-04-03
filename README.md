@@ -18,20 +18,13 @@ other.
 
 ```bash
 uv tool install pttman
+pttman install-service
+systemctl --user start pttman.service
 ```
 
-This installs `pttman` to `~/.local/bin/`.
-
-Then install and start the systemd service:
-
-```bash
-git clone https://github.com/mwolson/pttman.git
-cd pttman
-mkdir -p ~/.config/systemd/user
-cp systemd/pttman.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now pttman.service
-```
+This installs `pttman` to `~/.local/bin/`, copies the systemd user service into
+place, and enables it. After installing, point your push-to-talk key at the
+client binary.
 
 ### Alternative: install.sh
 
@@ -44,8 +37,6 @@ systemctl --user start pttman.service
 
 This copies `pttman` to `~/.local/bin/` and installs and enables the user
 service.
-
-After installing, point your push-to-talk key at the client binary.
 
 ### Optional: set defaults
 
@@ -130,13 +121,15 @@ daemon.
 
 ```text
 pttman                                 Run the daemon (default)
-pttman mute                            Mute the microphone
-pttman unmute                          Unmute the microphone
-pttman toggle                          Toggle the microphone mute state
-pttman status                          Print the current microphone state
-pttman list-sources                    List available audio sources
 pttman get-default-source              Print the default source from the config file
+pttman install-service                 Install and enable the systemd user service
+pttman list-sources                    List available audio sources
+pttman mute                            Mute the microphone
 pttman set-default-source SOURCE       Save default source and signal the daemon
+pttman status                          Print the current microphone state
+pttman toggle                          Toggle the microphone mute state
+pttman uninstall-service               Disable and remove the systemd user service
+pttman unmute                          Unmute the microphone
 ```
 
 Aliases:

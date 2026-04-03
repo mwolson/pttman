@@ -11,7 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def load_module():
-    loader = importlib.machinery.SourceFileLoader("pttman_module", str(ROOT / "pttman.py"))
+    loader = importlib.machinery.SourceFileLoader("pttman_module", str(ROOT / "pttman" / "__init__.py"))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     if spec is None:
         raise RuntimeError("Failed to create import spec for pttman")
@@ -356,6 +356,104 @@ class SocketTests(unittest.TestCase):
                 self.assertEqual(b"mute", payload)
             finally:
                 server.close()
+
+
+class ServiceTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_get_service_source_returns_valid_unit(self):
+        content = PTTMAN.get_service_source()
+        self.assertIn("[Unit]", content)
+        self.assertIn("[Service]", content)
+        self.assertIn("[Install]", content)
+        self.assertIn("ExecStart=", content)
+
+    def test_get_service_source_matches_repo_file(self):
+        content = PTTMAN.get_service_source()
+        repo_path = ROOT / "systemd" / "pttman.service"
+        with open(repo_path) as f:
+            expected = f.read()
+        self.assertEqual(expected, content)
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_install_service_creates_file_and_enables(self, _print, run_mock):
+        systemd_dir = os.path.join(self._tmpdir, "systemd", "user")
+        with mock.patch.object(PTTMAN, "SYSTEMD_USER_DIR", systemd_dir):
+            PTTMAN.run_install_service()
+
+        service_path = os.path.join(systemd_dir, "pttman.service")
+        self.assertTrue(os.path.exists(service_path))
+        with open(service_path) as f:
+            content = f.read()
+        self.assertIn("[Service]", content)
+
+        self.assertEqual(
+            [
+                mock.call(["systemctl", "--user", "daemon-reload"], check=True),
+                mock.call(["systemctl", "--user", "enable", "pttman.service"], check=True),
+            ],
+            run_mock.call_args_list,
+        )
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_install_service_is_idempotent(self, _print, run_mock):
+        systemd_dir = os.path.join(self._tmpdir, "systemd", "user")
+        with mock.patch.object(PTTMAN, "SYSTEMD_USER_DIR", systemd_dir):
+            PTTMAN.run_install_service()
+            PTTMAN.run_install_service()
+
+        service_path = os.path.join(systemd_dir, "pttman.service")
+        self.assertTrue(os.path.exists(service_path))
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_uninstall_service_removes_file(self, _print, run_mock):
+        systemd_dir = os.path.join(self._tmpdir, "systemd", "user")
+        os.makedirs(systemd_dir)
+        service_path = os.path.join(systemd_dir, "pttman.service")
+        with open(service_path, "w") as f:
+            f.write("[Service]\n")
+
+        with mock.patch.object(PTTMAN, "SYSTEMD_USER_DIR", systemd_dir):
+            PTTMAN.run_uninstall_service()
+
+        self.assertFalse(os.path.exists(service_path))
+        self.assertEqual(
+            [
+                mock.call(
+                    ["systemctl", "--user", "disable", "--now", "pttman.service"],
+                    check=False,
+                ),
+                mock.call(["systemctl", "--user", "daemon-reload"], check=True),
+            ],
+            run_mock.call_args_list,
+        )
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_uninstall_service_handles_missing_file(self, _print, run_mock):
+        systemd_dir = os.path.join(self._tmpdir, "systemd", "user")
+        os.makedirs(systemd_dir)
+        with mock.patch.object(PTTMAN, "SYSTEMD_USER_DIR", systemd_dir):
+            PTTMAN.run_uninstall_service()
+
+    def test_parse_args_subcommand_install_service(self):
+        with mock.patch("sys.argv", ["pttman", "install-service"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("install-service", args.command)
+
+    def test_parse_args_subcommand_uninstall_service(self):
+        with mock.patch("sys.argv", ["pttman", "uninstall-service"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("uninstall-service", args.command)
 
 
 if __name__ == "__main__":

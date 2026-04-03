@@ -23,6 +23,11 @@ CONF_PATH = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
     "pttman.conf",
 )
+SYSTEMD_USER_DIR = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "systemd",
+    "user",
+)
 
 
 def main():
@@ -39,6 +44,11 @@ def main():
         run_get_default("source")
         return
 
+    if command == "install-service":
+        require_commands(["systemctl"])
+        run_install_service()
+        return
+
     if command == "list-sources":
         require_commands(["pactl"])
         run_list_sources(args)
@@ -52,6 +62,11 @@ def main():
     if command == "status":
         require_commands(["pactl"])
         print_status(resolve_sources(args))
+        return
+
+    if command == "uninstall-service":
+        require_commands(["systemctl"])
+        run_uninstall_service()
         return
 
     require_commands(["pactl"])
@@ -79,12 +94,14 @@ def parse_args(file_args):
 
     sub = parser.add_subparsers(dest="command", title="commands")
     sub.add_parser("get-default-source", help="print the default source from the config file")
+    sub.add_parser("install-service", help="install and enable the systemd user service")
     sub.add_parser("list-sources", help="list available audio sources")
     sub.add_parser("mute", aliases=["release"], help="mute the microphone")
     p = sub.add_parser("set-default-source", help="set the default source and signal the daemon")
     p.add_argument("value", metavar="SOURCE")
     sub.add_parser("status", help="print the current microphone state")
     sub.add_parser("toggle", help="toggle the microphone mute state")
+    sub.add_parser("uninstall-service", help="disable and remove the systemd user service")
     sub.add_parser("unmute", aliases=["press", "talk"], help="unmute the microphone")
 
     args = parser.parse_args()
@@ -358,6 +375,60 @@ def signal_daemon():
         log(f"Sent SIGHUP to pttman daemon (PID {pid})")
     except OSError as exc:
         warn(f"Warning: Could not signal daemon (PID {pid}): {exc}")
+
+
+def run_install_service():
+    content = get_service_source()
+    service_path = os.path.join(SYSTEMD_USER_DIR, "pttman.service")
+
+    os.makedirs(SYSTEMD_USER_DIR, exist_ok=True)
+    with open(service_path, "w") as f:
+        f.write(content)
+    log(f"Installed {service_path}")
+
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "--user", "enable", "pttman.service"], check=True)
+    log("Enabled pttman.service")
+
+    log("")
+    log("To start immediately:")
+    log("  systemctl --user start pttman.service")
+    log("")
+    log("To check status:")
+    log("  systemctl --user status pttman.service")
+    log("  journalctl --user -u pttman.service -f")
+
+
+def get_service_source():
+    try:
+        from importlib.resources import files
+
+        return (files("pttman") / "systemd" / "pttman.service").read_text()
+    except (FileNotFoundError, TypeError, ModuleNotFoundError):
+        pass
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "systemd", "pttman.service")
+    with open(path) as f:
+        return f.read()
+
+
+def run_uninstall_service():
+    service_path = os.path.join(SYSTEMD_USER_DIR, "pttman.service")
+
+    subprocess.run(
+        ["systemctl", "--user", "disable", "--now", "pttman.service"],
+        check=False,
+    )
+
+    try:
+        os.remove(service_path)
+        log(f"Removed {service_path}")
+    except FileNotFoundError:
+        log(f"No service file at {service_path}")
+
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    log("Uninstalled pttman.service")
 
 
 def get_all_source_names():

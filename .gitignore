@@ -1,5 +1,5 @@
+__pycache__/
 /*.egg-info/
-/__pycache__/
 /dist/
 /node_modules/
 /tests/__pycache__/
