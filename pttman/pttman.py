@@ -8,6 +8,8 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
+import time
 
 VERSION = "0.3.1"
 
@@ -171,6 +173,7 @@ def require_commands(commands):
 def run_daemon(args):
     sources = resolve_sources(args)
     state = {
+        "auto_discover": not args.source,
         "cli_all_sources": args.cli_all_sources,
         "cli_source": args.cli_source,
         "sources": sources,
@@ -198,6 +201,7 @@ def run_daemon(args):
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
+    start_source_watcher(state)
     log(f"pttman daemon listening on {socket_path}")
     try:
         while True:
@@ -226,8 +230,10 @@ def reload_conf(state):
 
     if "source" in file_args:
         new_sources = [file_args["source"]]
+        state["auto_discover"] = False
     else:
         new_sources = get_all_source_names()
+        state["auto_discover"] = True
 
     old_sources = state["sources"]
     if old_sources != new_sources:
@@ -235,6 +241,39 @@ def reload_conf(state):
         state["sources"] = new_sources
     else:
         log("Config reloaded, no changes.")
+
+
+def start_source_watcher(state):
+    def watcher():
+        while True:
+            try:
+                proc = subprocess.Popen(
+                    ["pactl", "subscribe"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+                for line in proc.stdout:
+                    if "'new' on source" in line or "'remove' on source" in line:
+                        time.sleep(0.5)
+                        refresh_sources(state)
+                proc.wait()
+            except Exception as exc:
+                warn(f"Warning: source watcher: {exc}")
+            time.sleep(2)
+
+    thread = threading.Thread(target=watcher, daemon=True)
+    thread.start()
+
+
+def refresh_sources(state):
+    if not state["auto_discover"]:
+        return
+    new_sources = get_all_source_names()
+    old_sources = state["sources"]
+    if old_sources != new_sources:
+        log(f"Sources changed: {old_sources} -> {new_sources}")
+        state["sources"] = new_sources
 
 
 def send_or_run_action(action, sources):

@@ -3,6 +3,7 @@ import importlib.util
 import os
 import pathlib
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -137,15 +138,16 @@ class ConfTests(unittest.TestCase):
     def test_reload_conf_updates_source(self, _print):
         with open(PTTMAN.CONF_PATH, "w") as f:
             f.write("--source=new-source\n")
-        state = {"cli_all_sources": False, "cli_source": None, "sources": ["src1", "src2"]}
+        state = {"auto_discover": True, "cli_all_sources": False, "cli_source": None, "sources": ["src1", "src2"]}
         PTTMAN.reload_conf(state)
         self.assertEqual(["new-source"], state["sources"])
+        self.assertFalse(state["auto_discover"])
 
     @mock.patch("builtins.print")
     def test_reload_conf_cli_source_takes_precedence(self, _print):
         with open(PTTMAN.CONF_PATH, "w") as f:
             f.write("--source=new-source\n")
-        state = {"cli_all_sources": False, "cli_source": "cli-source", "sources": ["cli-source"]}
+        state = {"auto_discover": False, "cli_all_sources": False, "cli_source": "cli-source", "sources": ["cli-source"]}
         PTTMAN.reload_conf(state)
         self.assertEqual(["cli-source"], state["sources"])
 
@@ -153,7 +155,7 @@ class ConfTests(unittest.TestCase):
     def test_reload_conf_cli_all_sources_takes_precedence(self, _print):
         with open(PTTMAN.CONF_PATH, "w") as f:
             f.write("--source=new-source\n")
-        state = {"cli_all_sources": True, "cli_source": None, "sources": ["src1", "src2"]}
+        state = {"auto_discover": True, "cli_all_sources": True, "cli_source": None, "sources": ["src1", "src2"]}
         PTTMAN.reload_conf(state)
         self.assertEqual(["src1", "src2"], state["sources"])
 
@@ -162,9 +164,41 @@ class ConfTests(unittest.TestCase):
     def test_reload_conf_no_source_reverts_to_all(self, _print, _get_all):
         with open(PTTMAN.CONF_PATH, "w") as f:
             f.write("# cleared config\n")
-        state = {"cli_all_sources": False, "cli_source": None, "sources": ["old-source"]}
+        state = {"auto_discover": False, "cli_all_sources": False, "cli_source": None, "sources": ["old-source"]}
         PTTMAN.reload_conf(state)
         self.assertEqual(["src1", "src2"], state["sources"])
+        self.assertTrue(state["auto_discover"])
+
+
+class SourceWatcherTests(unittest.TestCase):
+    @mock.patch.object(PTTMAN, "get_all_source_names", return_value=["src1", "src2"])
+    @mock.patch("builtins.print")
+    def test_refresh_sources_updates_when_auto_discover(self, _print, _get_all):
+        state = {"auto_discover": True, "sources": []}
+        PTTMAN.refresh_sources(state)
+        self.assertEqual(["src1", "src2"], state["sources"])
+
+    @mock.patch.object(PTTMAN, "get_all_source_names", return_value=["src1", "src2"])
+    def test_refresh_sources_skips_when_not_auto_discover(self, _get_all):
+        state = {"auto_discover": False, "sources": ["pinned"]}
+        PTTMAN.refresh_sources(state)
+        self.assertEqual(["pinned"], state["sources"])
+        _get_all.assert_not_called()
+
+    @mock.patch.object(PTTMAN, "get_all_source_names", return_value=["src1"])
+    @mock.patch("builtins.print")
+    def test_refresh_sources_no_op_when_unchanged(self, mock_print, _get_all):
+        state = {"auto_discover": True, "sources": ["src1"]}
+        PTTMAN.refresh_sources(state)
+        self.assertEqual(["src1"], state["sources"])
+        mock_print.assert_not_called()
+
+    @mock.patch.object(PTTMAN.subprocess, "Popen")
+    def test_start_source_watcher_spawns_daemon_thread(self, _popen):
+        state = {"auto_discover": True, "sources": []}
+        before = threading.active_count()
+        PTTMAN.start_source_watcher(state)
+        self.assertGreater(threading.active_count(), before)
 
 
 class ParseArgsTests(unittest.TestCase):
