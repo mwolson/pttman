@@ -11,7 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def load_module():
-    loader = importlib.machinery.SourceFileLoader("pttman_module", str(ROOT / "pttman" / "__init__.py"))
+    loader = importlib.machinery.SourceFileLoader("pttman_module", str(ROOT / "pttman" / "pttman.py"))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     if spec is None:
         raise RuntimeError("Failed to create import spec for pttman")

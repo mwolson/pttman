@@ -28,7 +28,7 @@ Prefer to write plans in the `plans/` directory.
 
 ## Key files
 
-- `pttman/__init__.py` -- main script (client + daemon)
+- `pttman/pttman.py` -- main script (client + daemon)
 - `install.sh` -- legacy installer (use `pttman install-service` instead)
 - `systemd/pttman.service` -- systemd user service definition (bundled in wheel
   via hatch `force-include`)
@@ -86,8 +86,8 @@ bun run hooks:pre-commit:all
    ```
 
 3. Update the version in `pyproject.toml`, `package.json`, and the `VERSION`
-   constant in `pttman/__init__.py`, then commit the version bump separately
-   from other changes with message `chore: bump version to <version>`.
+   constant in `pttman/pttman.py`, then commit the version bump separately from
+   other changes with message `chore: bump version to <version>`.
 
 4. Ask the user what tag name they want. Provide examples based on the current
    version:
