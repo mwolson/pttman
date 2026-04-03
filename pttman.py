@@ -11,36 +11,46 @@ import sys
 
 VERSION = "0.1.1"
 
+COMMAND_ALIASES = {
+    "press": "unmute",
+    "release": "mute",
+    "talk": "unmute",
+}
+
 
 def main():
     require_commands(["wpctl"])
 
     args = parse_args()
-    action = args.action or "toggle"
+    command = COMMAND_ALIASES.get(args.command, args.command)
 
-    if action == "daemon":
+    if command is None:
         run_daemon()
         return
 
-    if action == "status":
+    if command == "status":
         print_status()
         return
 
-    send_or_run_action(action)
+    send_or_run_action(command)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="pttman",
-        description="Push-to-talk microphone control with a daemon-backed command queue.",
+        description=(
+            "Push-to-talk microphone control with a daemon-backed command queue. "
+            "With no command, runs the daemon."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--daemon", action="store_const", const="daemon", dest="action")
-    group.add_argument("--mute", "--release", action="store_const", const="mute", dest="action")
-    group.add_argument("--status", action="store_const", const="status", dest="action")
-    group.add_argument("--toggle", action="store_const", const="toggle", dest="action")
-    group.add_argument("--unmute", "--press", "--talk", action="store_const", const="unmute", dest="action")
+
+    sub = parser.add_subparsers(dest="command", title="commands")
+    sub.add_parser("mute", aliases=["release"], help="mute the microphone")
+    sub.add_parser("status", help="print the current microphone state")
+    sub.add_parser("toggle", help="toggle the microphone mute state")
+    sub.add_parser("unmute", aliases=["press", "talk"], help="unmute the microphone")
+
     return parser.parse_args()
 
 

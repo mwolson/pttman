@@ -62,8 +62,8 @@ modmap:
     remap:
       F5:
         skip_key_event: true
-        press: { launch: ["/home/your-user/.local/bin/pttman", "--unmute"] }
-        release: { launch: ["/home/your-user/.local/bin/pttman", "--mute"] }
+        press: { launch: ["/home/your-user/.local/bin/pttman", "unmute"] }
+        release: { launch: ["/home/your-user/.local/bin/pttman", "mute"] }
 ```
 
 Pressing F5 tells the daemon to unmute. Releasing F5 tells it to mute again.
@@ -71,7 +71,7 @@ Pressing F5 tells the daemon to unmute. Releasing F5 tells it to mute again.
 You can check the current microphone state with:
 
 ```bash
-pttman --status
+pttman status
 ```
 
 ### Corsair mice on Arch Linux
@@ -98,17 +98,18 @@ systems.
 ## Commands
 
 ```text
-pttman --daemon
-pttman --mute
-pttman --unmute
-pttman --toggle
-pttman --status
+pttman mute
+pttman unmute
+pttman toggle
+pttman status
 ```
+
+With no command, `pttman` runs the daemon.
 
 Aliases:
 
-- `--release` for `--mute`
-- `--press` and `--talk` for `--unmute`
+- `release` for `mute`
+- `press` and `talk` for `unmute`
 
 ## Service
 

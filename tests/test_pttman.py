@@ -68,6 +68,38 @@ class PttmanTests(unittest.TestCase):
 
         run_action.assert_called_once_with("toggle")
 
+    def test_parse_args_no_subcommand_is_daemon(self):
+        with mock.patch("sys.argv", ["pttman"]):
+            args = PTTMAN.parse_args()
+        self.assertIsNone(args.command)
+
+    def test_parse_args_subcommand_mute(self):
+        with mock.patch("sys.argv", ["pttman", "mute"]):
+            args = PTTMAN.parse_args()
+        self.assertEqual("mute", args.command)
+
+    def test_parse_args_subcommand_status(self):
+        with mock.patch("sys.argv", ["pttman", "status"]):
+            args = PTTMAN.parse_args()
+        self.assertEqual("status", args.command)
+
+    def test_parse_args_subcommand_unmute(self):
+        with mock.patch("sys.argv", ["pttman", "unmute"]):
+            args = PTTMAN.parse_args()
+        self.assertEqual("unmute", args.command)
+
+    def test_parse_args_alias_release_maps_to_mute(self):
+        with mock.patch("sys.argv", ["pttman", "release"]):
+            args = PTTMAN.parse_args()
+        self.assertEqual("release", args.command)
+        self.assertEqual("mute", PTTMAN.COMMAND_ALIASES.get(args.command, args.command))
+
+    def test_parse_args_alias_press_maps_to_unmute(self):
+        with mock.patch("sys.argv", ["pttman", "press"]):
+            args = PTTMAN.parse_args()
+        self.assertEqual("press", args.command)
+        self.assertEqual("unmute", PTTMAN.COMMAND_ALIASES.get(args.command, args.command))
+
     def test_send_action_delivers_unix_datagram(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             server = PTTMAN.socket.socket(PTTMAN.socket.AF_UNIX, PTTMAN.socket.SOCK_DGRAM)

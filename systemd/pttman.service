@@ -4,7 +4,7 @@ After=graphical-session.target pipewire.service pipewire-pulse.service wireplumb
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/pttman --daemon
+ExecStart=%h/.local/bin/pttman
 Restart=always
 RestartSec=1
 
