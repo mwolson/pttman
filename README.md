@@ -1,10 +1,16 @@
 # pttman
 
-Push-to-talk microphone control for PipeWire and WirePlumber.
+Push-to-talk microphone control for PipeWire.
 
 `pttman` runs a small user service that serializes mute, unmute, and toggle
 requests over a Unix datagram socket so rapid key presses do not race each
 other.
+
+## Requirements
+
+- PipeWire with PulseAudio compatibility (`pipewire-pulse`)
+- `pactl` (from `pipewire-pulse` or `pulseaudio-utils`)
+- `systemctl` (for `set-default-source` to signal the daemon)
 
 ## Installation
 
@@ -41,6 +47,19 @@ service.
 
 After installing, point your push-to-talk key at the client binary.
 
+### Optional: set defaults
+
+By default, pttman operates on all audio sources. You can optionally save a
+preferred source so that pttman controls only that one:
+
+```bash
+pttman list-sources
+pttman set-default-source alsa_input.usb-046d_BRIO-03.pro-input-0
+```
+
+This writes to `~/.config/pttman.conf` and signals the running daemon to pick up
+the change.
+
 ### xremap
 
 On Arch Linux, install the xremap variant that matches your desktop environment
@@ -67,6 +86,13 @@ modmap:
 ```
 
 Pressing F5 tells the daemon to unmute. Releasing F5 tells it to mute again.
+
+You can also route your compositor's mic-mute key through pttman. For example,
+in niri's `keybinds.kdl`:
+
+```kdl
+XF86AudioMicMute  allow-when-locked=true { spawn "/home/your-user/.local/bin/pttman" "toggle"; }
+```
 
 You can check the current microphone state with:
 
@@ -97,19 +123,58 @@ systems.
 
 ## Commands
 
-```text
-pttman mute
-pttman unmute
-pttman toggle
-pttman status
-```
+pttman uses subcommands for one-off operations. With no subcommand, it runs the
+daemon.
 
-With no command, `pttman` runs the daemon.
+```text
+pttman                                 Run the daemon (default)
+pttman mute                            Mute the microphone
+pttman unmute                          Unmute the microphone
+pttman toggle                          Toggle the microphone mute state
+pttman status                          Print the current microphone state
+pttman list-sources                    List available audio sources
+pttman get-default-source              Print the default source from the config file
+pttman set-default-source SOURCE       Save default source and signal the daemon
+```
 
 Aliases:
 
 - `release` for `mute`
 - `press` and `talk` for `unmute`
+
+### Options
+
+These flags apply to the daemon and to action commands (`mute`, `unmute`,
+`toggle`, `status`):
+
+```text
+--source SOURCE     Audio source name to control (default: config file, then all sources)
+--all-sources       Operate on all audio sources (overrides --source from config)
+```
+
+`--source` and `--all-sources` are mutually exclusive.
+
+## Configuration File
+
+`pttman` reads defaults from `~/.config/pttman.conf` (or
+`$XDG_CONFIG_HOME/pttman.conf`). The file uses one flag per line:
+
+```text
+--source=alsa_input.usb-046d_BRIO-03.pro-input-0
+```
+
+Supported flags:
+
+- `--source=NAME` -- control only this source
+- `--all-sources=true` -- control all sources (the default when no config file
+  exists)
+
+These are mutually exclusive. Unrecognized flags cause an error at startup.
+Command-line arguments always take precedence over the config file.
+
+When the daemon receives a SIGHUP (sent automatically by `set-default-source`,
+or manually via `systemctl --user reload pttman.service`), it reloads the config
+file and updates the source for future operations.
 
 ## Service
 
@@ -120,7 +185,7 @@ journalctl --user -u pttman.service -f
 ```
 
 The daemon listens on `$XDG_RUNTIME_DIR/pttman.sock`. If the daemon is not
-running, client commands fall back to direct `wpctl` execution.
+running, client commands fall back to direct `pactl` execution.
 
 ## Development
 

@@ -11,31 +11,54 @@ import sys
 
 VERSION = "0.1.1"
 
+ALLOWED_CONF_FLAGS = {"--all-sources", "--source"}
+
 COMMAND_ALIASES = {
     "press": "unmute",
     "release": "mute",
     "talk": "unmute",
 }
 
+CONF_PATH = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "pttman.conf",
+)
+
 
 def main():
-    require_commands(["wpctl"])
-
-    args = parse_args()
+    file_args = load_conf()
+    args = parse_args(file_args)
     command = COMMAND_ALIASES.get(args.command, args.command)
 
     if command is None:
-        run_daemon()
+        require_commands(["pactl"])
+        run_daemon(args)
+        return
+
+    if command == "get-default-source":
+        run_get_default("source")
+        return
+
+    if command == "list-sources":
+        require_commands(["pactl"])
+        run_list_sources(args)
+        return
+
+    if command == "set-default-source":
+        require_commands(["systemctl"])
+        run_set_default("source", args.value)
         return
 
     if command == "status":
-        print_status()
+        require_commands(["pactl"])
+        print_status(resolve_sources(args))
         return
 
-    send_or_run_action(command)
+    require_commands(["pactl"])
+    send_or_run_action(command, resolve_sources(args))
 
 
-def parse_args():
+def parse_args(file_args):
     parser = argparse.ArgumentParser(
         prog="pttman",
         description=(
@@ -45,57 +68,164 @@ def parse_args():
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
 
+    source_group = parser.add_mutually_exclusive_group()
+    source_group.add_argument(
+        "--all-sources",
+        action="store_true",
+        default=False,
+        help="operate on all audio sources",
+    )
+    source_group.add_argument("--source", help="audio source name to control")
+
     sub = parser.add_subparsers(dest="command", title="commands")
+    sub.add_parser("get-default-source", help="print the default source from the config file")
+    sub.add_parser("list-sources", help="list available audio sources")
     sub.add_parser("mute", aliases=["release"], help="mute the microphone")
+    p = sub.add_parser("set-default-source", help="set the default source and signal the daemon")
+    p.add_argument("value", metavar="SOURCE")
     sub.add_parser("status", help="print the current microphone state")
     sub.add_parser("toggle", help="toggle the microphone mute state")
     sub.add_parser("unmute", aliases=["press", "talk"], help="unmute the microphone")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    args.cli_all_sources = args.all_sources
+    args.cli_source = args.source
+    if not args.all_sources and not args.source:
+        if "all_sources" in file_args:
+            args.all_sources = file_args["all_sources"]
+        if "source" in file_args:
+            args.source = file_args["source"]
+
+    return args
+
+
+def resolve_sources(args):
+    if args.source:
+        return [args.source]
+    return get_all_source_names()
+
+
+def load_conf():
+    if not os.path.exists(CONF_PATH):
+        return {}
+
+    result = {}
+    for flag, value in iter_conf_entries(CONF_PATH):
+        if flag not in ALLOWED_CONF_FLAGS:
+            warn(f"Error: Unsupported flag '{flag}' in {CONF_PATH}")
+            sys.exit(1)
+        if flag == "--all-sources":
+            if value not in ("true", "false"):
+                warn(f"Error: --all-sources must be 'true' or 'false' in {CONF_PATH}")
+                sys.exit(1)
+            result["all_sources"] = value == "true"
+        elif flag == "--source":
+            result["source"] = value
+
+    if result.get("all_sources") and "source" in result:
+        warn(f"Error: --all-sources and --source are mutually exclusive in {CONF_PATH}")
+        sys.exit(1)
+
+    return result
+
+
+def iter_conf_entries(path):
+    with open(path) as f:
+        for line_num, raw_line in enumerate(f, 1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = re.match(r"^(--[a-z][a-z0-9-]*)=(.+)$", line)
+            if not match:
+                warn(f"Error: Malformed line {line_num} in {path}: {line}")
+                sys.exit(1)
+            yield match.group(1), match.group(2)
 
 
 def require_commands(commands):
     missing = [command for command in commands if not shutil.which(command)]
     if missing:
         for command in missing:
-            print(f"Error: '{command}' is required but not found in PATH.", file=sys.stderr)
+            warn(f"Error: '{command}' is required but not found in PATH.")
         sys.exit(1)
 
 
-def run_daemon():
+def run_daemon(args):
+    sources = resolve_sources(args)
+    state = {
+        "cli_all_sources": args.cli_all_sources,
+        "cli_source": args.cli_source,
+        "sources": sources,
+    }
+
+    if args.source:
+        log(f"Source: {args.source}")
+    else:
+        log(f"Operating on all sources: {', '.join(sources)}")
+
     socket_path = get_socket_path()
     cleanup_socket(socket_path)
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     server.bind(socket_path)
 
+    def handle_sighup(_signum, _frame):
+        reload_conf(state)
+
     def handle_exit(_signum, _frame):
         cleanup_socket(socket_path)
         sys.exit(0)
 
+    signal.signal(signal.SIGHUP, handle_sighup)
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
-    print(f"pttman daemon listening on {socket_path}")
+    log(f"pttman daemon listening on {socket_path}")
     try:
         while True:
             try:
                 data = server.recv(64)
                 command = coalesce_commands(server, decode_command(data))
-                run_action(command)
+                run_action(command, state["sources"])
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-                print(f"Warning: {exc}", file=sys.stderr)
+                warn(f"Warning: {exc}")
     finally:
         server.close()
         cleanup_socket(socket_path)
 
 
-def send_or_run_action(action):
+def reload_conf(state):
+    log("Received SIGHUP, reloading config...")
+    try:
+        file_args = load_conf()
+    except SystemExit:
+        warn("Warning: Failed to reload config, keeping current settings.")
+        return
+
+    if state["cli_source"] or state["cli_all_sources"]:
+        log("CLI flags take precedence, keeping current settings.")
+        return
+
+    if "source" in file_args:
+        new_sources = [file_args["source"]]
+    else:
+        new_sources = get_all_source_names()
+
+    old_sources = state["sources"]
+    if old_sources != new_sources:
+        log(f"Updated sources: {old_sources} -> {new_sources}")
+        state["sources"] = new_sources
+    else:
+        log("Config reloaded, no changes.")
+
+
+def send_or_run_action(action, sources):
     try:
         send_action(action)
     except OSError as exc:
-        print(f"Warning: daemon unavailable, running '{action}' directly ({exc}).", file=sys.stderr)
-        run_action(action)
+        warn(f"Warning: daemon unavailable, running '{action}' directly ({exc}).")
+        run_action(action, sources)
 
 
 def send_action(action):
@@ -114,7 +244,7 @@ def coalesce_commands(server, initial_command):
             try:
                 effective = decode_command(server.recv(64))
             except ValueError as exc:
-                print(f"Warning: {exc}", file=sys.stderr)
+                warn(f"Warning: {exc}")
     except BlockingIOError:
         return effective
     finally:
@@ -128,84 +258,128 @@ def decode_command(data):
     return command
 
 
-def run_action(action):
+def run_action(action, sources):
     if action == "mute":
-        set_mute_all(True)
+        set_mute(sources, True)
         return
     if action == "unmute":
-        set_mute_all(False)
+        set_mute(sources, False)
         return
     if action == "toggle":
-        toggle_all()
+        toggle_mute(sources)
         return
     raise ValueError(f"Unsupported action: {action}")
 
 
-def get_audio_source_ids():
-    output = subprocess.check_output(["wpctl", "status"], text=True)
-    in_audio = False
-    in_sources = False
-    ids = []
+def run_list_sources(args):
+    sources = get_all_source_names()
+    if not sources:
+        warn("Error: No audio sources found.")
+        sys.exit(1)
+
+    selected = args.source or get_default_source_name()
+    descriptions = get_source_descriptions()
+
+    for name in sources:
+        parts = [name]
+        desc = descriptions.get(name)
+        if desc:
+            parts.append(f"({desc})")
+        parts.append(get_mute_state(name))
+        if name == selected:
+            parts.append("*")
+        print("  ".join(parts))
+
+
+def run_get_default(key):
+    flag = f"--{key}"
+    hint = f"Use 'pttman list-{key}s' to see available options, then 'pttman set-default-{key}' to set one."
+
+    if not os.path.exists(CONF_PATH):
+        warn(f"No config file found at {CONF_PATH}")
+        warn("Without a default, pttman operates on all sources.")
+        warn(hint)
+        sys.exit(1)
+
+    for conf_flag, value in iter_conf_entries(CONF_PATH):
+        if conf_flag == flag:
+            print(value)
+            return
+
+    warn(f"No {flag} entry found in {CONF_PATH}")
+    warn("Without a default, pttman operates on all sources.")
+    warn(hint)
+    sys.exit(1)
+
+
+def run_set_default(key, value):
+    flag = f"--{key}"
+    flag_prefix = f"{flag}="
+    lines = []
+    replaced = False
+
+    if os.path.exists(CONF_PATH):
+        with open(CONF_PATH) as f:
+            for line in f:
+                if line.strip().startswith(flag_prefix):
+                    lines.append(f"{flag_prefix}{value}\n")
+                    replaced = True
+                else:
+                    lines.append(line)
+
+    if not replaced:
+        lines.append(f"{flag_prefix}{value}\n")
+
+    os.makedirs(os.path.dirname(CONF_PATH), exist_ok=True)
+    with open(CONF_PATH, "w") as f:
+        f.writelines(lines)
+
+    log(f"Wrote {flag_prefix}{value} to {CONF_PATH}")
+    signal_daemon()
+
+
+def signal_daemon():
+    try:
+        output = subprocess.check_output(
+            ["systemctl", "--user", "show", "pttman.service", "-p", "MainPID"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return
+
+    match = re.match(r"MainPID=(\d+)", output.strip())
+    if not match or match.group(1) == "0":
+        return
+
+    pid = int(match.group(1))
+    try:
+        os.kill(pid, signal.SIGHUP)
+        log(f"Sent SIGHUP to pttman daemon (PID {pid})")
+    except OSError as exc:
+        warn(f"Warning: Could not signal daemon (PID {pid}): {exc}")
+
+
+def get_all_source_names():
+    try:
+        output = subprocess.check_output(
+            ["pactl", "list", "sources", "short"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return []
+    names = []
     for line in output.splitlines():
-        if line.startswith("Audio"):
-            in_audio = True
-            continue
-        if re.match(r"^[A-Z]", line):
-            in_audio = False
-            in_sources = False
-            continue
-        if in_audio and "Sources:" in line:
-            in_sources = True
-            continue
-        if in_audio and in_sources and re.match(r"^\s*[├└│].*:$", line):
-            in_sources = False
-            continue
-        if in_audio and in_sources:
-            match = re.search(r"[\s*]+(\d+)\.", line)
-            if match:
-                ids.append(match.group(1))
-
-    ids.append("@DEFAULT_AUDIO_SOURCE@")
-
-    deduped_ids = []
-    seen = set()
-    for source_id in ids:
-        if source_id in seen:
-            continue
-        seen.add(source_id)
-        deduped_ids.append(source_id)
-    return deduped_ids
-
-
-def set_mute_all(mute):
-    value = "1" if mute else "0"
-    for source_id in get_audio_source_ids() or ["@DEFAULT_AUDIO_SOURCE@"]:
-        subprocess.run(["wpctl", "set-mute", source_id, value], check=True)
-
-
-def toggle_all():
-    for source_id in get_audio_source_ids() or ["@DEFAULT_AUDIO_SOURCE@"]:
-        subprocess.run(["wpctl", "set-mute", source_id, "toggle"], check=True)
-
-
-def print_status():
-    for source_id in get_audio_source_ids() or ["@DEFAULT_AUDIO_SOURCE@"]:
-        try:
-            volume = subprocess.check_output(
-                ["wpctl", "get-volume", source_id],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            )
-        except subprocess.CalledProcessError:
-            continue
-        state = "muted" if "[MUTED]" in volume else "unmuted"
-        display_id = get_default_source_name() if source_id == "@DEFAULT_AUDIO_SOURCE@" else source_id
-        print(f"source {display_id}: {state}")
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            name = parts[1]
+            if ".monitor" not in name:
+                names.append(name)
+    return names
 
 
 def get_default_source_name():
-    if not shutil.which("pactl"):
-        return "@DEFAULT_AUDIO_SOURCE@"
     try:
         output = subprocess.check_output(
             ["pactl", "get-default-source"],
@@ -213,8 +387,67 @@ def get_default_source_name():
             stderr=subprocess.DEVNULL,
         )
     except subprocess.CalledProcessError:
-        return "@DEFAULT_AUDIO_SOURCE@"
-    return output.strip() or "@DEFAULT_AUDIO_SOURCE@"
+        return "@DEFAULT_SOURCE@"
+    return output.strip() or "@DEFAULT_SOURCE@"
+
+
+def get_source_descriptions():
+    try:
+        output = subprocess.check_output(
+            ["pactl", "list", "sources"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return {}
+    descriptions = {}
+    current_name = None
+    for line in output.splitlines():
+        match = re.match(r"\s*Name:\s*(\S+)", line)
+        if match:
+            current_name = match.group(1)
+            continue
+        match = re.match(r"\s*Description:\s*(.+)", line)
+        if match and current_name:
+            descriptions[current_name] = match.group(1).strip()
+            current_name = None
+    return descriptions
+
+
+def get_mute_state(source):
+    try:
+        output = subprocess.check_output(
+            ["pactl", "get-source-mute", source],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return "unknown"
+    return "muted" if "yes" in output else "unmuted"
+
+
+def set_mute(sources, mute):
+    value = "1" if mute else "0"
+    for source in sources:
+        subprocess.run(["pactl", "set-source-mute", source, value], check=True)
+
+
+def toggle_mute(sources):
+    for source in sources:
+        subprocess.run(["pactl", "set-source-mute", source, "toggle"], check=True)
+
+
+def print_status(sources):
+    all_sources = get_all_source_names()
+    default_name = get_default_source_name()
+    managed = set()
+    for s in sources:
+        managed.add(default_name if s == "@DEFAULT_SOURCE@" else s)
+
+    for source in all_sources:
+        state = get_mute_state(source)
+        marker = " *" if source in managed else ""
+        print(f"source {source}: {state}{marker}")
 
 
 def get_socket_path():
@@ -228,6 +461,14 @@ def cleanup_socket(socket_path):
             os.unlink(socket_path)
     except FileNotFoundError:
         pass
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def warn(message):
+    print(message, file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

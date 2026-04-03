@@ -1,5 +1,6 @@
 import importlib.machinery
 import importlib.util
+import os
 import pathlib
 import tempfile
 import unittest
@@ -21,15 +22,11 @@ def load_module():
 
 PTTMAN = load_module()
 
-WPCTL_STATUS = """Audio
- ├─ Devices:
- │      42. Some Device
- ├─ Sources:
- │  *   45. BRIO
- │      47. Headset Mic
- └─ Streams:
-Video
-"""
+PACTL_LIST_SOURCES_SHORT = (
+    "64\talsa_input.usb-046d_BRIO-03.pro-input-0\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED\n"
+    "65\talsa_input.pci-0000_00_1f.3.analog-stereo\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED\n"
+    "86\talsa_output.pci-0000_01_00.1.pro-output-3.monitor\tPipeWire\ts32le 8ch 48000Hz\tIDLE\n"
+)
 
 
 class FakeSocket:
@@ -46,11 +43,289 @@ class FakeSocket:
         raise BlockingIOError
 
 
-class PttmanTests(unittest.TestCase):
-    @mock.patch.object(PTTMAN.subprocess, "check_output", return_value=WPCTL_STATUS)
-    def test_get_audio_source_ids_parses_sources_and_adds_default(self, _check_output):
-        self.assertEqual(["45", "47", "@DEFAULT_AUDIO_SOURCE@"], PTTMAN.get_audio_source_ids())
+class ConfTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._orig_conf_path = PTTMAN.CONF_PATH
+        PTTMAN.CONF_PATH = os.path.join(self._tmpdir.name, "pttman.conf")
 
+    def tearDown(self):
+        PTTMAN.CONF_PATH = self._orig_conf_path
+        self._tmpdir.cleanup()
+
+    def test_load_conf_returns_empty_when_no_file(self):
+        self.assertEqual({}, PTTMAN.load_conf())
+
+    def test_load_conf_reads_source(self):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--source=alsa_input.usb-046d_BRIO-03.pro-input-0\n")
+        self.assertEqual({"source": "alsa_input.usb-046d_BRIO-03.pro-input-0"}, PTTMAN.load_conf())
+
+    def test_load_conf_ignores_comments_and_blank_lines(self):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("# a comment\n\n--source=my-source\n")
+        self.assertEqual({"source": "my-source"}, PTTMAN.load_conf())
+
+    def test_load_conf_rejects_unknown_flags(self):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--bogus=value\n")
+        with self.assertRaises(SystemExit):
+            PTTMAN.load_conf()
+
+    def test_load_conf_rejects_malformed_lines(self):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("not a flag\n")
+        with self.assertRaises(SystemExit):
+            PTTMAN.load_conf()
+
+    @mock.patch.object(PTTMAN, "signal_daemon")
+    def test_set_default_source_creates_file(self, _signal_daemon):
+        PTTMAN.run_set_default("source", "my-source")
+        with open(PTTMAN.CONF_PATH) as f:
+            self.assertEqual("--source=my-source\n", f.read())
+
+    @mock.patch.object(PTTMAN, "signal_daemon")
+    def test_set_default_source_replaces_existing(self, _signal_daemon):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--source=old-source\n")
+        PTTMAN.run_set_default("source", "new-source")
+        with open(PTTMAN.CONF_PATH) as f:
+            self.assertEqual("--source=new-source\n", f.read())
+
+    @mock.patch("builtins.print")
+    def test_get_default_source_prints_source(self, mock_print):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--source=my-source\n")
+        PTTMAN.run_get_default("source")
+        mock_print.assert_called_once_with("my-source")
+
+    @mock.patch("builtins.print")
+    def test_get_default_source_exits_when_no_file(self, _print):
+        with self.assertRaises(SystemExit):
+            PTTMAN.run_get_default("source")
+
+    @mock.patch("builtins.print")
+    def test_get_default_source_exits_when_no_entry(self, _print):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("# empty config\n")
+        with self.assertRaises(SystemExit):
+            PTTMAN.run_get_default("source")
+
+    def test_load_conf_reads_all_sources(self):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--all-sources=true\n")
+        self.assertEqual({"all_sources": True}, PTTMAN.load_conf())
+
+    def test_load_conf_reads_all_sources_false(self):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--all-sources=false\n")
+        self.assertEqual({"all_sources": False}, PTTMAN.load_conf())
+
+    def test_load_conf_rejects_all_sources_invalid_value(self):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--all-sources=yes\n")
+        with self.assertRaises(SystemExit):
+            PTTMAN.load_conf()
+
+    def test_load_conf_rejects_all_sources_with_source(self):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--all-sources=true\n--source=my-source\n")
+        with self.assertRaises(SystemExit):
+            PTTMAN.load_conf()
+
+    @mock.patch("builtins.print")
+    def test_reload_conf_updates_source(self, _print):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--source=new-source\n")
+        state = {"cli_all_sources": False, "cli_source": None, "sources": ["src1", "src2"]}
+        PTTMAN.reload_conf(state)
+        self.assertEqual(["new-source"], state["sources"])
+
+    @mock.patch("builtins.print")
+    def test_reload_conf_cli_source_takes_precedence(self, _print):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--source=new-source\n")
+        state = {"cli_all_sources": False, "cli_source": "cli-source", "sources": ["cli-source"]}
+        PTTMAN.reload_conf(state)
+        self.assertEqual(["cli-source"], state["sources"])
+
+    @mock.patch("builtins.print")
+    def test_reload_conf_cli_all_sources_takes_precedence(self, _print):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("--source=new-source\n")
+        state = {"cli_all_sources": True, "cli_source": None, "sources": ["src1", "src2"]}
+        PTTMAN.reload_conf(state)
+        self.assertEqual(["src1", "src2"], state["sources"])
+
+    @mock.patch.object(PTTMAN, "get_all_source_names", return_value=["src1", "src2"])
+    @mock.patch("builtins.print")
+    def test_reload_conf_no_source_reverts_to_all(self, _print, _get_all):
+        with open(PTTMAN.CONF_PATH, "w") as f:
+            f.write("# cleared config\n")
+        state = {"cli_all_sources": False, "cli_source": None, "sources": ["old-source"]}
+        PTTMAN.reload_conf(state)
+        self.assertEqual(["src1", "src2"], state["sources"])
+
+
+class ParseArgsTests(unittest.TestCase):
+    def test_no_subcommand_is_daemon(self):
+        with mock.patch("sys.argv", ["pttman"]):
+            args = PTTMAN.parse_args({})
+        self.assertIsNone(args.command)
+
+    def test_subcommand_get_default_source(self):
+        with mock.patch("sys.argv", ["pttman", "get-default-source"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("get-default-source", args.command)
+
+    def test_subcommand_list_sources(self):
+        with mock.patch("sys.argv", ["pttman", "list-sources"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("list-sources", args.command)
+
+    def test_subcommand_mute(self):
+        with mock.patch("sys.argv", ["pttman", "mute"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("mute", args.command)
+
+    def test_subcommand_set_default_source(self):
+        with mock.patch("sys.argv", ["pttman", "set-default-source", "my-source"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("set-default-source", args.command)
+        self.assertEqual("my-source", args.value)
+
+    def test_subcommand_status(self):
+        with mock.patch("sys.argv", ["pttman", "status"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("status", args.command)
+
+    def test_subcommand_unmute(self):
+        with mock.patch("sys.argv", ["pttman", "unmute"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("unmute", args.command)
+
+    def test_alias_press_maps_to_unmute(self):
+        with mock.patch("sys.argv", ["pttman", "press"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("press", args.command)
+        self.assertEqual("unmute", PTTMAN.COMMAND_ALIASES.get(args.command, args.command))
+
+    def test_alias_release_maps_to_mute(self):
+        with mock.patch("sys.argv", ["pttman", "release"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("release", args.command)
+        self.assertEqual("mute", PTTMAN.COMMAND_ALIASES.get(args.command, args.command))
+
+    def test_source_flag(self):
+        with mock.patch("sys.argv", ["pttman", "--source", "my-source", "mute"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual("my-source", args.source)
+        self.assertEqual("my-source", args.cli_source)
+
+    def test_all_sources_flag(self):
+        with mock.patch("sys.argv", ["pttman", "--all-sources", "mute"]):
+            args = PTTMAN.parse_args({})
+        self.assertTrue(args.all_sources)
+        self.assertTrue(args.cli_all_sources)
+
+    def test_conf_source_used_as_default(self):
+        with mock.patch("sys.argv", ["pttman", "mute"]):
+            args = PTTMAN.parse_args({"source": "conf-source"})
+        self.assertEqual("conf-source", args.source)
+        self.assertIsNone(args.cli_source)
+
+    def test_conf_all_sources_used_as_default(self):
+        with mock.patch("sys.argv", ["pttman", "mute"]):
+            args = PTTMAN.parse_args({"all_sources": True})
+        self.assertTrue(args.all_sources)
+        self.assertFalse(args.cli_all_sources)
+
+    def test_cli_source_overrides_conf(self):
+        with mock.patch("sys.argv", ["pttman", "--source", "cli-source", "mute"]):
+            args = PTTMAN.parse_args({"source": "conf-source"})
+        self.assertEqual("cli-source", args.source)
+        self.assertEqual("cli-source", args.cli_source)
+
+    def test_cli_all_sources_overrides_conf_source(self):
+        with mock.patch("sys.argv", ["pttman", "--all-sources", "mute"]):
+            args = PTTMAN.parse_args({"source": "conf-source"})
+        self.assertTrue(args.all_sources)
+        self.assertIsNone(args.source)
+
+
+class ResolveSourcesTests(unittest.TestCase):
+    @mock.patch.object(PTTMAN, "get_all_source_names", return_value=["src1", "src2"])
+    def test_default_is_all_sources(self, _get_all):
+        with mock.patch("sys.argv", ["pttman", "mute"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual(["src1", "src2"], PTTMAN.resolve_sources(args))
+
+    def test_with_source_flag(self):
+        with mock.patch("sys.argv", ["pttman", "--source", "my-source", "mute"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual(["my-source"], PTTMAN.resolve_sources(args))
+
+    @mock.patch.object(PTTMAN, "get_all_source_names", return_value=["src1", "src2"])
+    def test_with_all_sources_flag(self, _get_all):
+        with mock.patch("sys.argv", ["pttman", "--all-sources", "mute"]):
+            args = PTTMAN.parse_args({})
+        self.assertEqual(["src1", "src2"], PTTMAN.resolve_sources(args))
+
+
+class PactlTests(unittest.TestCase):
+    @mock.patch.object(PTTMAN.subprocess, "check_output", return_value=PACTL_LIST_SOURCES_SHORT)
+    def test_get_all_source_names_parses_pactl_output(self, _check_output):
+        names = PTTMAN.get_all_source_names()
+        self.assertEqual(
+            ["alsa_input.usb-046d_BRIO-03.pro-input-0", "alsa_input.pci-0000_00_1f.3.analog-stereo"],
+            names,
+        )
+
+    @mock.patch.object(PTTMAN.subprocess, "check_output", return_value=PACTL_LIST_SOURCES_SHORT)
+    def test_get_all_source_names_filters_monitors(self, _check_output):
+        names = PTTMAN.get_all_source_names()
+        self.assertFalse(any(".monitor" in n for n in names))
+
+    @mock.patch("builtins.print")
+    @mock.patch.object(PTTMAN, "get_mute_state", return_value="muted")
+    @mock.patch.object(PTTMAN, "get_default_source_name", return_value="src1")
+    @mock.patch.object(PTTMAN, "get_all_source_names", return_value=["src1", "src2"])
+    def test_print_status_marks_managed_sources(self, _get_all, _get_default, _get_mute, mock_print):
+        PTTMAN.print_status(["@DEFAULT_SOURCE@"])
+        calls = [str(c) for c in mock_print.call_args_list]
+        self.assertTrue(any("src1" in c and " *" in c for c in calls))
+        self.assertTrue(any("src2" in c and " *" not in c for c in calls))
+
+    @mock.patch("builtins.print")
+    @mock.patch.object(PTTMAN, "get_mute_state", return_value="unmuted")
+    @mock.patch.object(PTTMAN, "get_default_source_name", return_value="src1")
+    @mock.patch.object(PTTMAN, "get_all_source_names", return_value=["src1", "src2"])
+    def test_print_status_marks_all_when_all_sources(self, _get_all, _get_default, _get_mute, mock_print):
+        PTTMAN.print_status(["src1", "src2"])
+        calls = [str(c) for c in mock_print.call_args_list]
+        self.assertTrue(all(" *" in c for c in calls))
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    def test_set_mute_calls_pactl(self, mock_run):
+        PTTMAN.set_mute(["src1", "src2"], True)
+        mock_run.assert_any_call(["pactl", "set-source-mute", "src1", "1"], check=True)
+        mock_run.assert_any_call(["pactl", "set-source-mute", "src2", "1"], check=True)
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    def test_toggle_mute_calls_pactl(self, mock_run):
+        PTTMAN.toggle_mute(["src1"])
+        mock_run.assert_called_once_with(["pactl", "set-source-mute", "src1", "toggle"], check=True)
+
+    @mock.patch.object(PTTMAN.subprocess, "check_output", return_value="Mute: yes\n")
+    def test_get_mute_state_muted(self, _check_output):
+        self.assertEqual("muted", PTTMAN.get_mute_state("src1"))
+
+    @mock.patch.object(PTTMAN.subprocess, "check_output", return_value="Mute: no\n")
+    def test_get_mute_state_unmuted(self, _check_output):
+        self.assertEqual("unmuted", PTTMAN.get_mute_state("src1"))
+
+
+class SocketTests(unittest.TestCase):
     @mock.patch("builtins.print")
     def test_coalesce_commands_last_valid_command_wins(self, _print):
         fake_socket = FakeSocket([b"bogus", b"unmute", b"mute"])
@@ -64,41 +339,9 @@ class PttmanTests(unittest.TestCase):
     @mock.patch.object(PTTMAN, "send_action", side_effect=OSError("missing socket"))
     @mock.patch("builtins.print")
     def test_send_or_run_action_falls_back_to_direct_execution(self, _print, _send_action, run_action):
-        PTTMAN.send_or_run_action("toggle")
+        PTTMAN.send_or_run_action("toggle", ["@DEFAULT_SOURCE@"])
 
-        run_action.assert_called_once_with("toggle")
-
-    def test_parse_args_no_subcommand_is_daemon(self):
-        with mock.patch("sys.argv", ["pttman"]):
-            args = PTTMAN.parse_args()
-        self.assertIsNone(args.command)
-
-    def test_parse_args_subcommand_mute(self):
-        with mock.patch("sys.argv", ["pttman", "mute"]):
-            args = PTTMAN.parse_args()
-        self.assertEqual("mute", args.command)
-
-    def test_parse_args_subcommand_status(self):
-        with mock.patch("sys.argv", ["pttman", "status"]):
-            args = PTTMAN.parse_args()
-        self.assertEqual("status", args.command)
-
-    def test_parse_args_subcommand_unmute(self):
-        with mock.patch("sys.argv", ["pttman", "unmute"]):
-            args = PTTMAN.parse_args()
-        self.assertEqual("unmute", args.command)
-
-    def test_parse_args_alias_release_maps_to_mute(self):
-        with mock.patch("sys.argv", ["pttman", "release"]):
-            args = PTTMAN.parse_args()
-        self.assertEqual("release", args.command)
-        self.assertEqual("mute", PTTMAN.COMMAND_ALIASES.get(args.command, args.command))
-
-    def test_parse_args_alias_press_maps_to_unmute(self):
-        with mock.patch("sys.argv", ["pttman", "press"]):
-            args = PTTMAN.parse_args()
-        self.assertEqual("press", args.command)
-        self.assertEqual("unmute", PTTMAN.COMMAND_ALIASES.get(args.command, args.command))
+        run_action.assert_called_once_with("toggle", ["@DEFAULT_SOURCE@"])
 
     def test_send_action_delivers_unix_datagram(self):
         with tempfile.TemporaryDirectory() as tmpdir:
