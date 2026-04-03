@@ -89,7 +89,16 @@ bun run hooks:pre-commit:all
    constant in `pttman/pttman.py`, then commit the version bump separately from
    other changes with message `chore: bump version to <version>`.
 
-4. Ask the user what tag name they want. Provide examples based on the current
+4. Push the version-bump commit and verify CI passes before tagging:
+
+   ```sh
+   git push
+   gh run watch          # wait for the check job to go green
+   ```
+
+   If CI fails, fix the issue and push again before proceeding.
+
+5. Ask the user what tag name they want. Provide examples based on the current
    version:
    - If current version is `0.2.0`:
      - Minor update (new features): `0.3.0`

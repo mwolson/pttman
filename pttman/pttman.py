@@ -253,6 +253,8 @@ def start_source_watcher(state):
                     stderr=subprocess.DEVNULL,
                     text=True,
                 )
+                if proc.stdout is None:
+                    continue
                 for line in proc.stdout:
                     if "'new' on source" in line or "'remove' on source" in line:
                         time.sleep(0.5)
