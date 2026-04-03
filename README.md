@@ -70,14 +70,14 @@ Then configure a push-to-talk key binding:
 modmap:
   - name: Push-to-talk
     remap:
-      F6:
+      F9:
         skip_key_event: true
         press: { launch: ["/home/your-user/.local/bin/pttman", "unmute"] }
         release: { launch: ["/home/your-user/.local/bin/pttman", "mute"] }
 ```
 
-Pressing F6 (as configured above, which is conveniently labeled with a mic icon
-on some laptop keyboards) tells the daemon to unmute. Releasing F6 tells it to
+Pressing F9 (as configured above, which is conveniently labeled with a mic icon
+on some laptop keyboards) tells the daemon to unmute. Releasing F9 tells it to
 mute again.
 
 You can also route your compositor's mic-mute key through pttman. For example,
@@ -95,7 +95,7 @@ pttman status
 
 ### Corsair mice on Arch Linux
 
-If you use a Corsair mouse and want one of its extra buttons to behave like F6,
+If you use a Corsair mouse and want one of its extra buttons to behave like F9,
 `ckb-next` is a straightforward way to do it.
 
 On Arch Linux, install `ckb-next` with:
@@ -105,9 +105,9 @@ sudo pacman -S ckb-next
 ```
 
 Then launch `ckb-next`, select your mouse, pick the button you want to use for
-push-to-talk, and remap that button to `F6`.
+push-to-talk, and remap that button to `F9`.
 
-After that, xremap can keep using the F6 rule above, and your Corsair mouse
+After that, xremap can keep using the F9 rule above, and your Corsair mouse
 button will trigger push-to-talk through `pttman`.
 
 If you specifically want the upstream development build instead of the packaged
