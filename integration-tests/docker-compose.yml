@@ -1,0 +1,14 @@
+services:
+  test-openrc-system:
+    build:
+      context: ../
+      dockerfile: integration-tests/openrc-system/Dockerfile
+  test-openrc-user:
+    build:
+      context: ../
+      dockerfile: integration-tests/openrc-user/Dockerfile
+  test-systemd:
+    build:
+      context: ../
+      dockerfile: integration-tests/systemd/Dockerfile
+    privileged: true

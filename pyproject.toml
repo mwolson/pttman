@@ -17,4 +17,9 @@ pttman = "pttman:main"
 packages = ["pttman"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"openrc-system/pttman" = "pttman/openrc-system/pttman"
+"openrc-user/pttman" = "pttman/openrc-user/pttman"
 "systemd/pttman.service" = "pttman/systemd/pttman.service"
+
+[tool.ty.rules]
+all = "error"

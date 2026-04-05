@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+
+description="Push-to-talk manager"
+supervisor=supervise-daemon
+
+command="$HOME/.local/bin/pttman"
+respawn_delay=1
+respawn_max=0
+
+depend() {
+    need localmount
+}

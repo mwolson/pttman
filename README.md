@@ -10,11 +10,11 @@ other.
 
 - PipeWire with PulseAudio compatibility (`pipewire-pulse`)
 - `pactl` (from `pipewire-pulse` or `pulseaudio-utils`)
-- `systemctl` (for `set-default-source` to signal the daemon)
+- One of: `systemd` or `OpenRC`
 
 ## Installation
 
-### Recommended: uv
+### systemd
 
 ```bash
 uv tool install pttman
@@ -24,9 +24,43 @@ systemctl --user start pttman.service
 
 This installs `pttman` to `~/.local/bin/`, copies the systemd user service into
 place, and enables it. After installing, point your push-to-talk key at the
-client binary.
+client binary, and make sure `~/.local/bin` is on your PATH.
 
-### Alternative: install.sh
+### OpenRC user service (0.60+, Alpine edge, etc.)
+
+```bash
+uv tool install pttman
+pttman install-service
+rc-service --user pttman start
+```
+
+On OpenRC 0.60 or newer, `install-service` automatically installs a user-level
+service to `~/.config/rc/init.d/pttman`. Make sure `~/.local/bin` is on your
+PATH.
+
+### OpenRC system service (older OpenRC)
+
+```bash
+sudo uv pip install --system --break-system-packages pttman
+sudo pttman install-service
+sudo rc-service pttman start
+```
+
+On OpenRC versions before 0.60, `install-service` installs a system-level init
+script to `/etc/init.d/pttman` and adds it to the default runlevel. The service
+uses `supervise-daemon` for process supervision with automatic restart.
+
+To configure the user and environment for the daemon, create
+`/etc/conf.d/pttman`:
+
+```sh
+command_user="youruser"
+supervise_daemon_args="--env XDG_RUNTIME_DIR=/run/user/1000"
+```
+
+Replace `1000` with your user's UID (`id -u youruser`).
+
+### Alternative: install.sh (systemd)
 
 ```bash
 git clone https://github.com/mwolson/pttman.git
@@ -122,13 +156,13 @@ daemon.
 ```text
 pttman                                 Run the daemon (default)
 pttman get-default-source              Print the default source from the config file
-pttman install-service                 Install and enable the systemd user service
+pttman install-service                 Install and enable the service (systemd or OpenRC)
 pttman list-sources                    List available audio sources
 pttman mute                            Mute the microphone
 pttman set-default-source SOURCE       Save default source and signal the daemon
 pttman status                          Print the current microphone state
 pttman toggle                          Toggle the microphone mute state
-pttman uninstall-service               Disable and remove the systemd user service
+pttman uninstall-service               Disable and remove the service (systemd or OpenRC)
 pttman unmute                          Unmute the microphone
 ```
 
@@ -167,16 +201,31 @@ Supported flags:
 These are mutually exclusive. Unrecognized flags cause an error at startup.
 Command-line arguments always take precedence over the config file.
 
-When the daemon receives a SIGHUP (sent automatically by `set-default-source`,
-or manually via `systemctl --user reload pttman.service`), it reloads the config
-file and updates the source for future operations.
+`set-default-source` automatically signals the running daemon to reload the
+config file and update the source for future operations.
 
 ## Service
+
+### systemd
 
 ```bash
 systemctl --user start pttman.service
 systemctl --user status pttman.service
 journalctl --user -u pttman.service -f
+```
+
+### OpenRC (user, 0.60+)
+
+```bash
+rc-service --user pttman start
+rc-service --user pttman status
+```
+
+### OpenRC (system, <0.60)
+
+```bash
+sudo rc-service pttman start
+rc-service pttman status
 ```
 
 The daemon listens on `$XDG_RUNTIME_DIR/pttman.sock`. If the daemon is not
@@ -186,9 +235,26 @@ running, client commands fall back to direct `pactl` execution.
 
 ### Testing
 
+Unit tests:
+
 ```bash
-python3 -m unittest discover -s tests -v
+bun run test
 ```
+
+Integration tests (requires Docker):
+
+```bash
+bun run test:integration
+```
+
+Both:
+
+```bash
+bun run test:all
+```
+
+The integration tests use Docker containers to verify the systemd and OpenRC
+service files work end-to-end (install, start, stop, uninstall).
 
 ### Hooks
 

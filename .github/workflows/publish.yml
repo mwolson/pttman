@@ -17,6 +17,7 @@ jobs:
       - run: uvx ruff check pttman/ tests/
       - run: uvx ty check pttman/ tests/
       - run: python -m unittest discover -s tests -v
+      - run: integration-tests/run.sh
 
   publish:
     needs: check

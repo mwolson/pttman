@@ -25,6 +25,12 @@ CONF_PATH = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
     "pttman.conf",
 )
+OPENRC_SYSTEM_INIT_DIR = "/etc/init.d"
+OPENRC_USER_INIT_DIR = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "rc",
+    "init.d",
+)
 SYSTEMD_USER_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
     "systemd",
@@ -47,8 +53,20 @@ def main():
         return
 
     if command == "install-service":
-        require_commands(["systemctl"])
-        run_install_service()
+        init_system = detect_init_system()
+        if init_system == "systemd":
+            require_non_root()
+            run_install_service()
+        elif init_system == "openrc-user":
+            require_non_root()
+            run_install_openrc_user_service()
+        elif init_system == "openrc-system":
+            require_root()
+            run_install_openrc_service()
+        else:
+            warn("Error: No supported init system found.")
+            warn("pttman requires either systemd or OpenRC.")
+            sys.exit(1)
         return
 
     if command == "list-sources":
@@ -57,7 +75,6 @@ def main():
         return
 
     if command == "set-default-source":
-        require_commands(["systemctl"])
         run_set_default("source", args.value)
         return
 
@@ -67,8 +84,20 @@ def main():
         return
 
     if command == "uninstall-service":
-        require_commands(["systemctl"])
-        run_uninstall_service()
+        init_system = detect_init_system()
+        if init_system == "systemd":
+            require_non_root()
+            run_uninstall_service()
+        elif init_system == "openrc-user":
+            require_non_root()
+            run_uninstall_openrc_user_service()
+        elif init_system == "openrc-system":
+            require_root()
+            run_uninstall_openrc_service()
+        else:
+            warn("Error: No supported init system found.")
+            warn("pttman requires either systemd or OpenRC.")
+            sys.exit(1)
         return
 
     require_commands(["pactl"])
@@ -96,14 +125,14 @@ def parse_args(file_args):
 
     sub = parser.add_subparsers(dest="command", title="commands")
     sub.add_parser("get-default-source", help="print the default source from the config file")
-    sub.add_parser("install-service", help="install and enable the systemd user service")
+    sub.add_parser("install-service", help="install and enable the service (systemd or OpenRC)")
     sub.add_parser("list-sources", help="list available audio sources")
     sub.add_parser("mute", aliases=["release"], help="mute the microphone")
     p = sub.add_parser("set-default-source", help="set the default source and signal the daemon")
     p.add_argument("value", metavar="SOURCE")
     sub.add_parser("status", help="print the current microphone state")
     sub.add_parser("toggle", help="toggle the microphone mute state")
-    sub.add_parser("uninstall-service", help="disable and remove the systemd user service")
+    sub.add_parser("uninstall-service", help="disable and remove the service (systemd or OpenRC)")
     sub.add_parser("unmute", aliases=["press", "talk"], help="unmute the microphone")
 
     args = parser.parse_args()
@@ -207,7 +236,11 @@ def run_daemon(args):
         while True:
             try:
                 data = server.recv(64)
-                command = coalesce_commands(server, decode_command(data))
+                command = decode_command(data)
+                if command == "reload":
+                    reload_conf(state)
+                    continue
+                command = coalesce_commands(server, command, state)
                 run_action(command, state["sources"])
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 warn(f"Warning: {exc}")
@@ -217,7 +250,7 @@ def run_daemon(args):
 
 
 def reload_conf(state):
-    log("Received SIGHUP, reloading config...")
+    log("Reloading config...")
     try:
         file_args = load_conf()
     except SystemExit:
@@ -294,13 +327,17 @@ def send_action(action):
         client.close()
 
 
-def coalesce_commands(server, initial_command):
+def coalesce_commands(server, initial_command, state):
     effective = initial_command
     server.setblocking(False)
     try:
         while True:
             try:
-                effective = decode_command(server.recv(64))
+                command = decode_command(server.recv(64))
+                if command == "reload":
+                    reload_conf(state)
+                else:
+                    effective = command
             except ValueError as exc:
                 warn(f"Warning: {exc}")
     except BlockingIOError:
@@ -311,7 +348,7 @@ def coalesce_commands(server, initial_command):
 
 def decode_command(data):
     command = data.decode().strip()
-    if command not in {"mute", "toggle", "unmute"}:
+    if command not in {"mute", "reload", "toggle", "unmute"}:
         raise ValueError(f"Unsupported action: {command}")
     return command
 
@@ -398,24 +435,48 @@ def run_set_default(key, value):
 
 def signal_daemon():
     try:
+        send_action("reload")
+        log("Signaled daemon to reload config")
+    except OSError:
+        pass
+
+
+def detect_init_system():
+    if shutil.which("systemctl"):
+        return "systemd"
+    if shutil.which("rc-service"):
+        if get_openrc_version() >= (0, 60):
+            return "openrc-user"
+        return "openrc-system"
+    return None
+
+
+def get_openrc_version():
+    try:
         output = subprocess.check_output(
-            ["systemctl", "--user", "show", "pttman.service", "-p", "MainPID"],
+            ["openrc", "--version"],
             text=True,
             stderr=subprocess.DEVNULL,
         )
-    except subprocess.CalledProcessError:
-        return
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return (0, 0)
+    match = re.search(r"(\d+\.\d+(?:\.\d+)?)", output)
+    if not match:
+        return (0, 0)
+    parts = match.group(1).split(".")
+    return tuple(int(p) for p in parts)
 
-    match = re.match(r"MainPID=(\d+)", output.strip())
-    if not match or match.group(1) == "0":
-        return
 
-    pid = int(match.group(1))
-    try:
-        os.kill(pid, signal.SIGHUP)
-        log(f"Sent SIGHUP to pttman daemon (PID {pid})")
-    except OSError as exc:
-        warn(f"Warning: Could not signal daemon (PID {pid}): {exc}")
+def require_root():
+    if os.geteuid() != 0:
+        warn("Error: System-level services require root. Try running with sudo.")
+        sys.exit(1)
+
+
+def require_non_root():
+    if os.geteuid() == 0:
+        warn("Error: User-level services should not be installed as root.")
+        sys.exit(1)
 
 
 def run_install_service():
@@ -454,6 +515,51 @@ def get_service_source():
         return f.read()
 
 
+def run_install_openrc_service():
+    content = get_openrc_system_source()
+    service_path = os.path.join(OPENRC_SYSTEM_INIT_DIR, "pttman")
+
+    match = re.search(r'^command="(.+)"', content, re.MULTILINE)
+    if match and not os.path.exists(match.group(1)):
+        warn(f"Error: pttman not found at {match.group(1)}")
+        warn("The OpenRC system service expects a system-wide installation.")
+        warn("Try: sudo uv pip install --system --break-system-packages pttman")
+        sys.exit(1)
+
+    try:
+        with open(service_path, "w") as f:
+            f.write(content)
+        os.chmod(service_path, 0o755)
+    except PermissionError:
+        warn(f"Error: Permission denied writing to {service_path}")
+        sys.exit(1)
+    log(f"Installed {service_path}")
+
+    subprocess.run(["rc-update", "add", "pttman", "default"], check=True)
+    log("Added pttman to default runlevel")
+
+    log("")
+    log("To start immediately:")
+    log("  rc-service pttman start")
+    log("")
+    log("To check status:")
+    log("  rc-service pttman status")
+
+
+def get_openrc_system_source():
+    try:
+        from importlib.resources import files
+
+        return (files("pttman") / "openrc-system" / "pttman").read_text()
+    except (FileNotFoundError, TypeError, ModuleNotFoundError):
+        pass
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "openrc-system", "pttman")
+    with open(path) as f:
+        return f.read()
+
+
 def run_uninstall_service():
     service_path = os.path.join(SYSTEMD_USER_DIR, "pttman.service")
 
@@ -470,6 +576,82 @@ def run_uninstall_service():
 
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     log("Uninstalled pttman.service")
+
+
+def run_uninstall_openrc_service():
+    service_path = os.path.join(OPENRC_SYSTEM_INIT_DIR, "pttman")
+
+    subprocess.run(["rc-service", "pttman", "stop"], check=False)
+    subprocess.run(["rc-update", "del", "pttman", "default"], check=False)
+
+    try:
+        os.remove(service_path)
+        log(f"Removed {service_path}")
+    except FileNotFoundError:
+        log(f"No init script at {service_path}")
+    except PermissionError:
+        warn(f"Error: Permission denied removing {service_path}")
+        sys.exit(1)
+
+    log("Uninstalled pttman service")
+
+
+def run_install_openrc_user_service():
+    content = get_openrc_user_source()
+    service_dir = OPENRC_USER_INIT_DIR
+    runlevel_dir = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+        "rc",
+        "runlevels",
+        "default",
+    )
+    service_path = os.path.join(service_dir, "pttman")
+
+    os.makedirs(service_dir, exist_ok=True)
+    with open(service_path, "w") as f:
+        f.write(content)
+    os.chmod(service_path, 0o755)
+    log(f"Installed {service_path}")
+
+    os.makedirs(runlevel_dir, exist_ok=True)
+    subprocess.run(["rc-update", "--user", "add", "pttman", "default"], check=True)
+    log("Added pttman to user default runlevel")
+
+    log("")
+    log("To start immediately:")
+    log("  rc-service --user pttman start")
+    log("")
+    log("To check status:")
+    log("  rc-service --user pttman status")
+
+
+def get_openrc_user_source():
+    try:
+        from importlib.resources import files
+
+        return (files("pttman") / "openrc-user" / "pttman").read_text()
+    except (FileNotFoundError, TypeError, ModuleNotFoundError):
+        pass
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "openrc-user", "pttman")
+    with open(path) as f:
+        return f.read()
+
+
+def run_uninstall_openrc_user_service():
+    service_path = os.path.join(OPENRC_USER_INIT_DIR, "pttman")
+
+    subprocess.run(["rc-service", "--user", "pttman", "stop"], check=False)
+    subprocess.run(["rc-update", "--user", "del", "pttman", "default"], check=False)
+
+    try:
+        os.remove(service_path)
+        log(f"Removed {service_path}")
+    except FileNotFoundError:
+        log(f"No init script at {service_path}")
+
+    log("Uninstalled pttman user service")
 
 
 def get_all_source_names():
@@ -513,16 +695,18 @@ def get_source_descriptions():
     except subprocess.CalledProcessError:
         return {}
     descriptions = {}
-    current_name = None
-    for line in output.splitlines():
-        match = re.match(r"\s*Name:\s*(\S+)", line)
-        if match:
-            current_name = match.group(1)
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        name_match = re.match(r"\s*Name:\s*(\S+)", line)
+        if not name_match:
             continue
-        match = re.match(r"\s*Description:\s*(.+)", line)
-        if match and current_name:
-            descriptions[current_name] = match.group(1).strip()
-            current_name = None
+        for next_line in lines[i + 1 :]:
+            desc_match = re.match(r"\s*Description:\s*(.+)", next_line)
+            if desc_match:
+                descriptions[name_match.group(1)] = desc_match.group(1).strip()
+                break
+            if re.match(r"\s*Name:\s*", next_line):
+                break
     return descriptions
 
 

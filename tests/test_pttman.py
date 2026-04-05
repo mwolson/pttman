@@ -363,11 +363,23 @@ class SocketTests(unittest.TestCase):
     @mock.patch("builtins.print")
     def test_coalesce_commands_last_valid_command_wins(self, _print):
         fake_socket = FakeSocket([b"bogus", b"unmute", b"mute"])
+        state = {"auto_discover": True, "cli_all_sources": False, "cli_source": None, "sources": []}
 
-        effective = PTTMAN.coalesce_commands(fake_socket, "toggle")
+        effective = PTTMAN.coalesce_commands(fake_socket, "toggle", state)
 
         self.assertEqual("mute", effective)
         self.assertEqual([False, True], fake_socket.blocking_values)
+
+    @mock.patch.object(PTTMAN, "reload_conf")
+    @mock.patch("builtins.print")
+    def test_coalesce_commands_handles_reload_without_clobbering(self, _print, mock_reload):
+        fake_socket = FakeSocket([b"reload", b"mute"])
+        state = {"auto_discover": True, "cli_all_sources": False, "cli_source": None, "sources": []}
+
+        effective = PTTMAN.coalesce_commands(fake_socket, "unmute", state)
+
+        self.assertEqual("mute", effective)
+        mock_reload.assert_called_once_with(state)
 
     @mock.patch.object(PTTMAN, "run_action")
     @mock.patch.object(PTTMAN, "send_action", side_effect=OSError("missing socket"))
@@ -488,6 +500,249 @@ class ServiceTests(unittest.TestCase):
         with mock.patch("sys.argv", ["pttman", "uninstall-service"]):
             args = PTTMAN.parse_args({})
         self.assertEqual("uninstall-service", args.command)
+
+
+class DetectInitSystemTests(unittest.TestCase):
+    @mock.patch.object(
+        PTTMAN.shutil,
+        "which",
+        side_effect=lambda cmd: "/usr/bin/systemctl" if cmd == "systemctl" else None,
+    )
+    def test_detects_systemd(self, _which):
+        self.assertEqual("systemd", PTTMAN.detect_init_system())
+
+    @mock.patch.object(PTTMAN, "get_openrc_version", return_value=(0, 55))
+    @mock.patch.object(
+        PTTMAN.shutil,
+        "which",
+        side_effect=lambda cmd: "/usr/sbin/rc-service" if cmd == "rc-service" else None,
+    )
+    def test_detects_openrc_system(self, _which, _version):
+        self.assertEqual("openrc-system", PTTMAN.detect_init_system())
+
+    @mock.patch.object(PTTMAN, "get_openrc_version", return_value=(0, 63))
+    @mock.patch.object(
+        PTTMAN.shutil,
+        "which",
+        side_effect=lambda cmd: "/usr/sbin/rc-service" if cmd == "rc-service" else None,
+    )
+    def test_detects_openrc_user(self, _which, _version):
+        self.assertEqual("openrc-user", PTTMAN.detect_init_system())
+
+    @mock.patch.object(PTTMAN.shutil, "which", return_value=None)
+    def test_returns_none_if_neither_found(self, _which):
+        self.assertIsNone(PTTMAN.detect_init_system())
+
+    @mock.patch.object(PTTMAN, "get_openrc_version", return_value=(0, 63))
+    @mock.patch.object(
+        PTTMAN.shutil,
+        "which",
+        side_effect=lambda cmd: {
+            "systemctl": "/usr/bin/systemctl",
+            "rc-service": "/usr/sbin/rc-service",
+        }.get(cmd),
+    )
+    def test_prefers_systemd_over_openrc(self, _which, _version):
+        self.assertEqual("systemd", PTTMAN.detect_init_system())
+
+
+class GetOpenRCVersionTests(unittest.TestCase):
+    @mock.patch.object(PTTMAN.subprocess, "check_output", return_value="openrc (OpenRC) 0.55.1\n")
+    def test_parses_version(self, _check_output):
+        self.assertEqual((0, 55, 1), PTTMAN.get_openrc_version())
+
+    @mock.patch.object(PTTMAN.subprocess, "check_output", return_value="openrc (OpenRC [DOCKER]) 0.63\n")
+    def test_parses_docker_version(self, _check_output):
+        self.assertEqual((0, 63), PTTMAN.get_openrc_version())
+
+    @mock.patch.object(PTTMAN.subprocess, "check_output", side_effect=FileNotFoundError)
+    def test_returns_zero_on_missing(self, _check_output):
+        self.assertEqual((0, 0), PTTMAN.get_openrc_version())
+
+
+class RootCheckTests(unittest.TestCase):
+    @mock.patch.object(PTTMAN.os, "geteuid", return_value=1000)
+    def test_require_root_fails_as_non_root(self, _geteuid):
+        with self.assertRaises(SystemExit):
+            PTTMAN.require_root()
+
+    @mock.patch.object(PTTMAN.os, "geteuid", return_value=0)
+    def test_require_root_passes_as_root(self, _geteuid):
+        PTTMAN.require_root()
+
+    @mock.patch.object(PTTMAN.os, "geteuid", return_value=0)
+    def test_require_non_root_fails_as_root(self, _geteuid):
+        with self.assertRaises(SystemExit):
+            PTTMAN.require_non_root()
+
+    @mock.patch.object(PTTMAN.os, "geteuid", return_value=1000)
+    def test_require_non_root_passes_as_non_root(self, _geteuid):
+        PTTMAN.require_non_root()
+
+
+class OpenRCSystemServiceTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_get_openrc_system_source_returns_valid_init_script(self):
+        content = PTTMAN.get_openrc_system_source()
+        self.assertIn("#!/sbin/openrc-run", content)
+        self.assertIn("command=", content)
+        self.assertIn("depend()", content)
+
+    def test_get_openrc_system_source_matches_repo_file(self):
+        content = PTTMAN.get_openrc_system_source()
+        repo_path = ROOT / "openrc-system" / "pttman"
+        with open(repo_path) as f:
+            expected = f.read()
+        self.assertEqual(expected, content)
+
+    def _stub_bin_exists(self, path):
+        return path == "/usr/local/bin/pttman" or os.path.lexists(path)
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_install_openrc_creates_file_and_adds_runlevel(self, _print, run_mock):
+        init_dir = os.path.join(self._tmpdir, "init.d")
+        os.makedirs(init_dir)
+        with mock.patch.object(PTTMAN, "OPENRC_SYSTEM_INIT_DIR", init_dir):
+            with mock.patch.object(PTTMAN.os.path, "exists", side_effect=self._stub_bin_exists):
+                PTTMAN.run_install_openrc_service()
+
+        service_path = os.path.join(init_dir, "pttman")
+        self.assertTrue(os.path.exists(service_path))
+        self.assertTrue(os.access(service_path, os.X_OK))
+        with open(service_path) as f:
+            content = f.read()
+        self.assertIn("openrc-run", content)
+
+        run_mock.assert_called_once_with(
+            ["rc-update", "add", "pttman", "default"],
+            check=True,
+        )
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_install_openrc_is_idempotent(self, _print, run_mock):
+        init_dir = os.path.join(self._tmpdir, "init.d")
+        os.makedirs(init_dir)
+        with mock.patch.object(PTTMAN, "OPENRC_SYSTEM_INIT_DIR", init_dir):
+            with mock.patch.object(PTTMAN.os.path, "exists", side_effect=self._stub_bin_exists):
+                PTTMAN.run_install_openrc_service()
+                PTTMAN.run_install_openrc_service()
+
+        service_path = os.path.join(init_dir, "pttman")
+        self.assertTrue(os.path.exists(service_path))
+
+    @mock.patch("builtins.print")
+    def test_install_openrc_fails_if_binary_missing(self, _print):
+        init_dir = os.path.join(self._tmpdir, "init.d")
+        os.makedirs(init_dir)
+        with mock.patch.object(PTTMAN, "OPENRC_SYSTEM_INIT_DIR", init_dir):
+            with self.assertRaises(SystemExit):
+                PTTMAN.run_install_openrc_service()
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_uninstall_openrc_removes_file(self, _print, run_mock):
+        init_dir = os.path.join(self._tmpdir, "init.d")
+        os.makedirs(init_dir)
+        service_path = os.path.join(init_dir, "pttman")
+        with open(service_path, "w") as f:
+            f.write("#!/sbin/openrc-run\n")
+
+        with mock.patch.object(PTTMAN, "OPENRC_SYSTEM_INIT_DIR", init_dir):
+            PTTMAN.run_uninstall_openrc_service()
+
+        self.assertFalse(os.path.exists(service_path))
+        self.assertEqual(
+            [
+                mock.call(["rc-service", "pttman", "stop"], check=False),
+                mock.call(["rc-update", "del", "pttman", "default"], check=False),
+            ],
+            run_mock.call_args_list,
+        )
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_uninstall_openrc_handles_missing_file(self, _print, run_mock):
+        init_dir = os.path.join(self._tmpdir, "init.d")
+        os.makedirs(init_dir)
+        with mock.patch.object(PTTMAN, "OPENRC_SYSTEM_INIT_DIR", init_dir):
+            PTTMAN.run_uninstall_openrc_service()
+
+
+class OpenRCUserServiceTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_get_openrc_user_source_returns_valid_init_script(self):
+        content = PTTMAN.get_openrc_user_source()
+        self.assertIn("#!/sbin/openrc-run", content)
+        self.assertIn("command=", content)
+
+    def test_get_openrc_user_source_matches_repo_file(self):
+        content = PTTMAN.get_openrc_user_source()
+        repo_path = ROOT / "openrc-user" / "pttman"
+        with open(repo_path) as f:
+            expected = f.read()
+        self.assertEqual(expected, content)
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_install_openrc_user_creates_file_and_adds_runlevel(self, _print, run_mock):
+        init_dir = os.path.join(self._tmpdir, "rc", "init.d")
+        with mock.patch.object(PTTMAN, "OPENRC_USER_INIT_DIR", init_dir):
+            with mock.patch.dict(PTTMAN.os.environ, {"XDG_CONFIG_HOME": self._tmpdir}):
+                PTTMAN.run_install_openrc_user_service()
+
+        service_path = os.path.join(init_dir, "pttman")
+        self.assertTrue(os.path.exists(service_path))
+        self.assertTrue(os.access(service_path, os.X_OK))
+
+        run_mock.assert_called_once_with(
+            ["rc-update", "--user", "add", "pttman", "default"],
+            check=True,
+        )
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_uninstall_openrc_user_removes_file(self, _print, run_mock):
+        init_dir = os.path.join(self._tmpdir, "rc", "init.d")
+        os.makedirs(init_dir)
+        service_path = os.path.join(init_dir, "pttman")
+        with open(service_path, "w") as f:
+            f.write("#!/sbin/openrc-run\n")
+
+        with mock.patch.object(PTTMAN, "OPENRC_USER_INIT_DIR", init_dir):
+            PTTMAN.run_uninstall_openrc_user_service()
+
+        self.assertFalse(os.path.exists(service_path))
+        self.assertEqual(
+            [
+                mock.call(["rc-service", "--user", "pttman", "stop"], check=False),
+                mock.call(["rc-update", "--user", "del", "pttman", "default"], check=False),
+            ],
+            run_mock.call_args_list,
+        )
+
+    @mock.patch.object(PTTMAN.subprocess, "run")
+    @mock.patch("builtins.print")
+    def test_uninstall_openrc_user_handles_missing_file(self, _print, run_mock):
+        init_dir = os.path.join(self._tmpdir, "rc", "init.d")
+        os.makedirs(init_dir)
+        with mock.patch.object(PTTMAN, "OPENRC_USER_INIT_DIR", init_dir):
+            PTTMAN.run_uninstall_openrc_user_service()
 
 
 if __name__ == "__main__":

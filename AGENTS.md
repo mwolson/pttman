@@ -55,17 +55,15 @@ Lefthook runs the following checks on commit (see `lefthook.yaml`):
 - `ty-check` -- type checking via `uvx ty check`
 - `unit-tests` -- full unit test suite
 
-Run the full pre-commit suite manually with:
+Run checks against the working tree (no staging required):
 
 ```sh
-bun run hooks:pre-commit
+bun run hooks:check
 ```
 
-Or against all files (not just staged):
-
-```sh
-bun run hooks:pre-commit:all
-```
+This uses the `check` hook group which runs against working tree content, unlike
+`pre-commit` which stashes unstaged changes. Prefer this for iterating on
+changes before committing.
 
 ## Releasing
 

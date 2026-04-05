@@ -7,11 +7,14 @@
     "fix:md": "prettier --write '**/*.md'",
     "fix:md:file": "prettier --write",
     "format:file": "prettier --write",
+    "hooks:check": "lefthook run check --all-files",
     "hooks:pre-commit": "lefthook run pre-commit",
     "hooks:pre-commit:all": "lefthook run pre-commit --all-files",
     "init": "bun run up && bun run init:hooks",
     "init:hooks": "lefthook install",
     "test": "python3 -m unittest discover -s tests -v",
+    "test:all": "bun run test && bun run test:integration",
+    "test:integration": "integration-tests/run.sh",
     "up": "bun install"
   },
   "devDependencies": {
