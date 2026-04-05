@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 ALLOWED_CONF_FLAGS = {"--all-sources", "--source"}
 
