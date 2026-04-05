@@ -7,7 +7,7 @@
     "fix:md": "prettier --write '**/*.md'",
     "fix:md:file": "prettier --write",
     "format:file": "prettier --write",
-    "hooks:check": "lefthook run check --all-files",
+    "hooks:check": "lefthook run pre-commit --all-files --no-stage-fixed",
     "hooks:pre-commit": "lefthook run pre-commit",
     "hooks:pre-commit:all": "lefthook run pre-commit --all-files",
     "init": "bun run up && bun run init:hooks",

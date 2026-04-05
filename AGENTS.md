@@ -61,9 +61,9 @@ Run checks against the working tree (no staging required):
 bun run hooks:check
 ```
 
-This uses the `check` hook group which runs against working tree content, unlike
-`pre-commit` which stashes unstaged changes. Prefer this for iterating on
-changes before committing.
+This runs the `pre-commit` hooks against all working tree files with
+`--all-files --no-stage-fixed`, so there is no stashing and no auto-staging.
+Prefer this for iterating on changes before committing.
 
 ## Releasing
 
