@@ -14,44 +14,59 @@ datagram send.
 ## Architecture
 
 ```text
-xremap (F5 press)   --> pttman --unmute --> sendto(sock, "unmute") --> daemon
-xremap (F5 release) --> pttman --mute   --> sendto(sock, "mute")   --> daemon
-niri (Ctrl+\)       --> pttman --toggle --> sendto(sock, "toggle") --> daemon
+xremap (key press)      --> pttman press   --> sendto(sock, "press")   --> daemon
+xremap (key release)    --> pttman release --> sendto(sock, "release") --> daemon
+niri (XF86AudioMicMute) --> pttman toggle  --> sendto(sock, "toggle")  --> daemon
 ```
 
 - Client: sends one datagram to `$XDG_RUNTIME_DIR/pttman.sock` and exits.
 - Daemon: binds a Unix datagram socket and processes commands in a single loop.
 - Coalescing: when the daemon wakes up, it drains any queued datagrams and the
   last command wins.
-- Status: `pttman --status` queries `wpctl` directly.
+- Status: `pttman status` queries `pactl` directly.
 
 ## Repo structure
 
 ```text
 pttman/
-  pttman
+  pttman/
+    __init__.py
+    pttman.py
   install.sh
-  systemd/
-    pttman.service
+  integration-tests/
+  openrc-system/
+    pttman
+  openrc-user/
+    pttman
   plans/
     implementation.md
+    mute-state-tracking.md
+  systemd/
+    pttman.service
+  tests/
+    test_pttman.py
+  pyproject.toml
   README.md
 ```
 
 ## CLI
 
+The daemon runs when `pttman` is invoked with no subcommand. Action subcommands:
+
 ```text
-pttman --daemon
-pttman --mute
-pttman --unmute
-pttman --toggle
-pttman --status
+pttman mute / unmute / toggle    # change state and record the preference
+pttman press / release           # temporary push-to-talk, preference unchanged
+pttman resync                    # reapply the recorded preference
+pttman status / list-sources     # read-only inspection
+pttman install-service           # install and enable the user service
+pttman uninstall-service         # disable and remove the user service
+pttman get-default-source        # print the default source from the config file
+pttman set-default-source SOURCE # save default source and signal the daemon
 ```
 
-Aliases to keep:
-
-- `--release` for `--mute`
-- `--press` and `--talk` for `--unmute`
+`press` and `release` are distinct wire actions, not aliases for
+`unmute`/`mute`: the daemon applies the same mute bits but skips
+`per_source_desired` updates. See `plans/mute-state-tracking.md`.
 
 ## Dotfiles integration
 
@@ -63,13 +78,10 @@ Aliases to keep:
 5. Update the Niri toggle keybind to call `/home/mwolson/.local/bin/pttman`.
 6. Remove the old `bin/push-to-talk` wrapper once the service is in place.
 
-## Testing checklist
+## Testing
 
-- [ ] `pttman --daemon` starts and binds the socket
-- [ ] `pttman --mute` and `pttman --unmute` change mic state
-- [ ] `pttman --toggle` works
-- [ ] `pttman --status` prints source states
-- [ ] Rapid F5 clicking does not pile up processes
-- [ ] The final release event mutes reliably
-- [ ] Client falls back to direct execution if the daemon is not running
-- [ ] Socket cleanup works on daemon exit
+Unit tests in `tests/test_pttman.py` cover arg parsing, action dispatch, source
+watching, socket send/coalesce, and service install/uninstall. Integration tests
+under `integration-tests/` exercise the systemd and OpenRC service files
+end-to-end in Docker containers. See the README's "Development" section for how
+to run them (`bun run test`, `bun run test:integration`, `bun run test:all`).

@@ -1,10 +1,16 @@
 # pttman
 
-Push-to-talk microphone control for PipeWire.
+Reliable push-to-talk and mic-mute for PipeWire.
 
-`pttman` runs a small user service that serializes mute, unmute, and toggle
-requests over a Unix datagram socket so rapid key presses do not race each
-other.
+`pttman` is a small user service that makes your mic stay muted when you want it
+muted:
+
+- Rapid mute / unmute / toggle key presses are serialized over a Unix datagram
+  socket, so a quick press-release cannot race itself into the wrong state.
+- Your intended mute state is reapplied after suspend, a PipeWire restart, or a
+  mic being unplugged and reconnected.
+- Accidental unmutes from other tools (volume sliders in quick menus,
+  `pavucontrol`, a stray `wpctl` call) are reverted within milliseconds.
 
 ## Requirements
 
@@ -106,13 +112,16 @@ modmap:
     remap:
       F9:
         skip_key_event: true
-        press: { launch: ["/home/your-user/.local/bin/pttman", "unmute"] }
-        release: { launch: ["/home/your-user/.local/bin/pttman", "mute"] }
+        press: { launch: ["/home/your-user/.local/bin/pttman", "press"] }
+        release: { launch: ["/home/your-user/.local/bin/pttman", "release"] }
 ```
 
 Pressing F9 (as configured above, which is conveniently labeled with a mic icon
-on some laptop keyboards) tells the daemon to unmute. Releasing F9 tells it to
-mute again.
+on some laptop keyboards) tells the daemon to unmute for the duration of the key
+press; releasing F9 mutes again. `press` and `release` are the temporary
+push-to-talk variants of `unmute` and `mute`: they do not change the daemon's
+recorded preference, so the mic returns to the preferred state after the next
+pipewire restart or `pttman resync`.
 
 You can also route your compositor's mic-mute key through pttman. For example,
 in niri's `keybinds.kdl` this implements mic toggle (rather than push-to-talk):
@@ -158,30 +167,50 @@ pttman                                 Run the daemon (default)
 pttman get-default-source              Print the default source from the config file
 pttman install-service                 Install and enable the service (systemd or OpenRC)
 pttman list-sources                    List available audio sources
-pttman mute                            Mute the microphone
+pttman mute                            Mute the microphone and record it as the preference
+pttman press                           Temporarily unmute (push-to-talk, does not change preference)
+pttman release                         Temporarily mute (push-to-talk, does not change preference)
+pttman resync                          Ask the daemon to reapply its desired mute state
 pttman set-default-source SOURCE       Save default source and signal the daemon
 pttman status                          Print the current microphone state
-pttman toggle                          Toggle the microphone mute state
+pttman toggle                          Toggle the microphone mute state and record the new state as the preference
 pttman uninstall-service               Disable and remove the service (systemd or OpenRC)
-pttman unmute                          Unmute the microphone
+pttman unmute                          Unmute the microphone and record it as the preference
 ```
 
-Aliases:
-
-- `release` for `mute`
-- `press` and `talk` for `unmute`
+`mute`, `unmute`, and `toggle` record the result as the daemon's preference, so
+the mic comes back in that state after a pipewire-pulse restart, hotplug, or
+`pttman resync`. `press` and `release` are the push-to-talk variants: they
+change the mute bit but do not update the preference, so a press-release cycle
+never overwrites the baseline you set with `pttman mute`/`unmute`/`toggle`.
 
 ### Options
 
 These flags apply to the daemon and to action commands (`mute`, `unmute`,
-`toggle`, `status`):
+`toggle`, `press`, `release`, `status`):
 
 ```text
 --source SOURCE     Audio source name to control (default: config file, then all sources)
 --all-sources       Operate on all audio sources (overrides --source from config)
+--start-muted       Mute managed sources when the daemon starts (default: true)
+--no-start-muted    Leave mic state untouched when the daemon starts
 ```
 
 `--source` and `--all-sources` are mutually exclusive.
+
+The daemon tracks a "desired" mute state per source: the last state set via
+`pttman mute`/`unmute`/`toggle`, falling back to the `--start-muted` default for
+sources with no explicit preference (including newly hotplugged ones). External
+changes from tools like noctalia or `pavucontrol` are reverted within
+milliseconds: the daemon watches `pactl subscribe`, detects drift against its
+last-applied state, and then reapplies the intended mute state.
+
+This covers the common failure modes (an accidental volume-slider unmute in a
+quick menu, a stray `wpctl` from another script) without updating the
+preference, so the baseline stays where `pttman mute`/`unmute` put it. The
+daemon also reapplies the desired state when the PipeWire-Pulse layer restarts
+(e.g. after suspend, or an explicit restart from `aproman`) or a source is added
+or removed. Use `pttman resync` to trigger a manual reapply on demand.
 
 ## Configuration File
 
@@ -197,9 +226,12 @@ Supported flags:
 - `--source=NAME` -- control only this source
 - `--all-sources=true` -- control all sources (the default when no config file
   exists)
+- `--start-muted=true|false` -- whether the daemon mutes managed sources at
+  startup (default: true)
 
-These are mutually exclusive. Unrecognized flags cause an error at startup.
-Command-line arguments always take precedence over the config file.
+`--source` and `--all-sources` are mutually exclusive. Unrecognized flags cause
+an error at startup. Command-line arguments always take precedence over the
+config file.
 
 `set-default-source` automatically signals the running daemon to reload the
 config file and update the source for future operations.

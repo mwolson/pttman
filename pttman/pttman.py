@@ -13,13 +13,7 @@ import time
 
 VERSION = "0.4.2"
 
-ALLOWED_CONF_FLAGS = {"--all-sources", "--source"}
-
-COMMAND_ALIASES = {
-    "press": "unmute",
-    "release": "mute",
-    "talk": "unmute",
-}
+ALLOWED_CONF_FLAGS = {"--all-sources", "--source", "--start-muted"}
 
 CONF_PATH = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
@@ -41,7 +35,7 @@ SYSTEMD_USER_DIR = os.path.join(
 def main():
     file_args = load_conf()
     args = parse_args(file_args)
-    command = COMMAND_ALIASES.get(args.command, args.command)
+    command = args.command
 
     if command is None:
         require_commands(["pactl"])
@@ -72,6 +66,14 @@ def main():
     if command == "list-sources":
         require_commands(["pactl"])
         run_list_sources(args)
+        return
+
+    if command == "resync":
+        try:
+            send_action("resync")
+        except OSError:
+            warn("Error: pttman daemon not running, cannot resync.")
+            sys.exit(1)
         return
 
     if command == "set-default-source":
@@ -113,6 +115,12 @@ def parse_args(file_args):
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    parser.add_argument(
+        "--start-muted",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="mute managed sources on daemon startup (default: true)",
+    )
 
     source_group = parser.add_mutually_exclusive_group()
     source_group.add_argument(
@@ -127,23 +135,29 @@ def parse_args(file_args):
     sub.add_parser("get-default-source", help="print the default source from the config file")
     sub.add_parser("install-service", help="install and enable the service (systemd or OpenRC)")
     sub.add_parser("list-sources", help="list available audio sources")
-    sub.add_parser("mute", aliases=["release"], help="mute the microphone")
+    sub.add_parser("mute", help="mute the microphone (records as preference)")
+    sub.add_parser("press", help="temporarily unmute for push-to-talk (does not change preference)")
+    sub.add_parser("release", help="temporarily mute for push-to-talk (does not change preference)")
+    sub.add_parser("resync", help="ask the daemon to reapply its desired mute state")
     p = sub.add_parser("set-default-source", help="set the default source and signal the daemon")
     p.add_argument("value", metavar="SOURCE")
     sub.add_parser("status", help="print the current microphone state")
     sub.add_parser("toggle", help="toggle the microphone mute state")
     sub.add_parser("uninstall-service", help="disable and remove the service (systemd or OpenRC)")
-    sub.add_parser("unmute", aliases=["press", "talk"], help="unmute the microphone")
+    sub.add_parser("unmute", help="unmute the microphone (records as preference)")
 
     args = parser.parse_args()
 
     args.cli_all_sources = args.all_sources
     args.cli_source = args.source
+    args.cli_start_muted = args.start_muted
     if not args.all_sources and not args.source:
         if "all_sources" in file_args:
             args.all_sources = file_args["all_sources"]
         if "source" in file_args:
             args.source = file_args["source"]
+    if args.start_muted is None:
+        args.start_muted = file_args.get("start_muted", True)
 
     return args
 
@@ -170,6 +184,11 @@ def load_conf():
             result["all_sources"] = value == "true"
         elif flag == "--source":
             result["source"] = value
+        elif flag == "--start-muted":
+            if value not in ("true", "false"):
+                warn(f"Error: --start-muted must be 'true' or 'false' in {CONF_PATH}")
+                sys.exit(1)
+            result["start_muted"] = value == "true"
 
     if result.get("all_sources") and "source" in result:
         warn(f"Error: --all-sources and --source are mutually exclusive in {CONF_PATH}")
@@ -205,6 +224,10 @@ def run_daemon(args):
         "auto_discover": not args.source,
         "cli_all_sources": args.cli_all_sources,
         "cli_source": args.cli_source,
+        "default_mute": bool(args.start_muted),
+        "last_applied_mute": {},
+        "lock": threading.Lock(),
+        "per_source_desired": {},
         "sources": sources,
     }
 
@@ -212,6 +235,15 @@ def run_daemon(args):
         log(f"Source: {args.source}")
     else:
         log(f"Operating on all sources: {', '.join(sources)}")
+
+    if args.start_muted and state["sources"]:
+        try:
+            apply_mute(state, state["sources"], True)
+            log("Initial state: muted (--start-muted)")
+        except subprocess.CalledProcessError as exc:
+            warn(f"Warning: Failed to apply initial mute: {exc}")
+    elif not args.start_muted:
+        log("Initial state: untouched (--no-start-muted)")
 
     socket_path = get_socket_path()
     cleanup_socket(socket_path)
@@ -241,7 +273,7 @@ def run_daemon(args):
                     reload_conf(state)
                     continue
                 command = coalesce_commands(server, command, state)
-                run_action(command, state["sources"])
+                run_action_with_state(command, state)
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 warn(f"Warning: {exc}")
     finally:
@@ -278,7 +310,10 @@ def reload_conf(state):
 
 def start_source_watcher(state):
     def watcher():
+        first_connect = True
+        backoff = 0.05
         while True:
+            started = time.monotonic()
             try:
                 proc = subprocess.Popen(
                     ["pactl", "subscribe"],
@@ -286,16 +321,26 @@ def start_source_watcher(state):
                     stderr=subprocess.DEVNULL,
                     text=True,
                 )
-                if proc.stdout is None:
-                    continue
-                for line in proc.stdout:
-                    if "'new' on source" in line or "'remove' on source" in line:
-                        time.sleep(0.5)
+                if proc.stdout is not None:
+                    if not first_connect:
                         refresh_sources(state)
-                proc.wait()
+                        reapply_desired_state(state)
+                    first_connect = False
+                    for line in proc.stdout:
+                        if "'new' on source" in line or "'remove' on source" in line:
+                            refresh_sources(state)
+                            reapply_desired_state(state)
+                        elif "'change' on source" in line:
+                            revert_external_change(state)
+                    proc.wait()
             except Exception as exc:
                 warn(f"Warning: source watcher: {exc}")
-            time.sleep(2)
+            if time.monotonic() - started >= 1.0:
+                backoff = 0.05
+                time.sleep(backoff)
+            else:
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 0.4)
 
     thread = threading.Thread(target=watcher, daemon=True)
     thread.start()
@@ -309,6 +354,77 @@ def refresh_sources(state):
     if old_sources != new_sources:
         log(f"Sources changed: {old_sources} -> {new_sources}")
         state["sources"] = new_sources
+
+
+def effective_desired(state, source):
+    overrides = state.get("per_source_desired") or {}
+    if source in overrides:
+        return overrides[source]
+    return bool(state.get("default_mute", True))
+
+
+def apply_mute(state, sources, mute):
+    if not sources:
+        return
+    with state.setdefault("lock", threading.Lock()):
+        _apply_mute_locked(state, sources, mute)
+
+
+def _apply_mute_locked(state, sources, mute):
+    if not sources:
+        return
+    last_applied = state.setdefault("last_applied_mute", {})
+    for source in sources:
+        last_applied[source] = mute
+    set_mute(sources, mute)
+
+
+def reapply_desired_state(state):
+    sources = state.get("sources") or []
+    if not sources:
+        return
+    with state.setdefault("lock", threading.Lock()):
+        muted = 0
+        unmuted = 0
+        for source in sources:
+            desired = effective_desired(state, source)
+            try:
+                _apply_mute_locked(state, [source], desired)
+            except subprocess.CalledProcessError as exc:
+                warn(f"Warning: Failed to reapply mute state for {source}: {exc}")
+                continue
+            if desired:
+                muted += 1
+            else:
+                unmuted += 1
+        if muted or unmuted:
+            log(f"Reapplied desired state: {muted} muted, {unmuted} unmuted")
+
+
+def revert_external_change(state):
+    sources = state.get("sources") or []
+    if not sources:
+        return
+    with state.setdefault("lock", threading.Lock()):
+        last_applied = state.setdefault("last_applied_mute", {})
+        for source in sources:
+            actual = get_mute_state(source)
+            if actual == "unknown":
+                continue
+            actual_muted = actual == "muted"
+            last = last_applied.get(source)
+            if last is None or last == actual_muted:
+                continue
+            try:
+                _apply_mute_locked(state, [source], last)
+            except subprocess.CalledProcessError as exc:
+                warn(f"Warning: Failed to revert external change on {source}: {exc}")
+                last_applied[source] = actual_muted
+                continue
+            log(
+                f"Reverted external change on {source}: "
+                f"back to {'muted' if last else 'unmuted'}"
+            )
 
 
 def send_or_run_action(action, sources):
@@ -348,20 +464,51 @@ def coalesce_commands(server, initial_command, state):
 
 def decode_command(data):
     command = data.decode().strip()
-    if command not in {"mute", "reload", "toggle", "unmute"}:
+    if command not in {"mute", "press", "release", "reload", "resync", "toggle", "unmute"}:
         raise ValueError(f"Unsupported action: {command}")
     return command
 
 
 def run_action(action, sources):
-    if action == "mute":
+    if action in ("mute", "release"):
         set_mute(sources, True)
         return
-    if action == "unmute":
+    if action in ("press", "unmute"):
         set_mute(sources, False)
         return
     if action == "toggle":
         toggle_mute(sources)
+        return
+    raise ValueError(f"Unsupported action: {action}")
+
+
+def run_action_with_state(action, state):
+    sources = state["sources"]
+    overrides = state.setdefault("per_source_desired", {})
+    if action == "mute":
+        apply_mute(state, sources, True)
+        for source in sources:
+            overrides[source] = True
+        return
+    if action == "unmute":
+        apply_mute(state, sources, False)
+        for source in sources:
+            overrides[source] = False
+        return
+    if action == "press":
+        apply_mute(state, sources, False)
+        return
+    if action == "release":
+        apply_mute(state, sources, True)
+        return
+    if action == "resync":
+        reapply_desired_state(state)
+        return
+    if action == "toggle":
+        new_mute = any(not effective_desired(state, s) for s in sources)
+        apply_mute(state, sources, new_mute)
+        for source in sources:
+            overrides[source] = new_mute
         return
     raise ValueError(f"Unsupported action: {action}")
 
