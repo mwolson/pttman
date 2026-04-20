@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 
-VERSION = "0.4.2"
+VERSION = "0.5.0"
 
 ALLOWED_CONF_FLAGS = {"--all-sources", "--source", "--start-muted"}
 
