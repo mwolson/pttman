@@ -1,0 +1,36 @@
+[package]
+name = "pttman"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+authors = ["Michael Olson <c@mwolson.org>"]
+description = "Push-to-talk microphone control with a daemon-backed command queue for PipeWire"
+repository = "https://github.com/mwolson/pttman"
+readme = "README.md"
+keywords = ["audio", "daemon", "microphone", "pipewire", "push-to-talk"]
+categories = ["command-line-utilities", "multimedia::audio"]
+exclude = ["node_modules/", "target/", "tmp/"]
+
+[[bin]]
+name = "pttman"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+regex = "1"
+signal-hook = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = true

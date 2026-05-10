@@ -1,0 +1,17 @@
+#!/bin/bash
+case "$1" in
+    list)
+        printf "64\ttest_source\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED\n"
+        ;;
+    get-default-source)
+        echo "test_source"
+        ;;
+    get-source-mute)
+        echo "Mute: no"
+        ;;
+    set-source-mute)
+        ;;
+    subscribe)
+        exec sleep infinity
+        ;;
+esac

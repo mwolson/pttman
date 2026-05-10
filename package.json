@@ -1,0 +1,28 @@
+{
+  "license": "MIT",
+  "name": "pttman",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "cargo build --release",
+    "clippy": "cargo clippy --all-targets -- -D warnings",
+    "fix:md": "prettier --write '**/*.md'",
+    "fix:md:file": "prettier --write",
+    "fmt": "cargo fmt --all",
+    "fmt:check": "cargo fmt --all -- --check",
+    "format:file": "prettier --write",
+    "hooks:check": "lefthook run pre-commit --all-files --no-stage-fixed",
+    "hooks:pre-commit": "lefthook run pre-commit",
+    "hooks:pre-commit:all": "lefthook run pre-commit --all-files",
+    "init": "bun run up && bun run init:hooks",
+    "init:hooks": "lefthook install",
+    "test": "cargo test",
+    "test:all": "bun run test && bun run test:integration",
+    "test:integration": "integration-tests/run.sh",
+    "up": "bun install && rustup show active-toolchain"
+  },
+  "devDependencies": {
+    "lefthook": "^2.1.4",
+    "prettier": "^3.8.1"
+  }
+}

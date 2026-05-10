@@ -1,0 +1,13 @@
+[Unit]
+Description=Push-to-talk manager
+After=graphical-session.target pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=simple
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStart=%h/.local/bin/pttman
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=graphical-session.target
