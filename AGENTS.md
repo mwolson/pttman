@@ -112,7 +112,12 @@ When the user provides a version:
 3. Examine each commit since the last tag.
 
 4. The publish workflow creates a draft GitHub release with platform tarballs.
-   Enhance the draft notes and publish the release.
+   Enhance the draft notes and publish the release. Start with a short summary,
+   group related changes under descriptive headings, and avoid a single generic
+   `## Changes` section when the release has multiple themes. Keep the "Full
+   Changelog" link when GitHub generated one. Do not include routine
+   verification sections or lists of check commands in public release notes;
+   report validation in the chat handoff instead.
 
 5. Tell the user to review the published release:
 
