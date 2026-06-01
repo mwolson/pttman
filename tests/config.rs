@@ -3,6 +3,7 @@ mod common;
 use clap::Parser;
 use pttman::cli::{self, Cli, Command};
 use pttman::config::{parse_conf, Config};
+use std::time::Duration;
 use tempfile::NamedTempFile;
 
 #[test]
@@ -24,6 +25,21 @@ fn config_reads_source() {
     std::io::Write::write_all(&mut file, b"--source=my-source\n").unwrap();
     let config = Config::build(&cli::Overrides::default(), Some(file.path())).unwrap();
     assert_eq!(config.source.as_deref(), Some("my-source"));
+}
+
+#[test]
+fn config_reads_ptt_hold_timeout() {
+    let mut file = NamedTempFile::new().unwrap();
+    std::io::Write::write_all(&mut file, b"--ptt-hold-timeout=2m\n").unwrap();
+    let config = Config::build(&cli::Overrides::default(), Some(file.path())).unwrap();
+    assert_eq!(config.ptt_hold_timeout, Some(Duration::from_secs(120)));
+}
+
+#[test]
+fn config_rejects_invalid_ptt_hold_timeout() {
+    let mut file = NamedTempFile::new().unwrap();
+    std::io::Write::write_all(&mut file, b"--ptt-hold-timeout=sometimes\n").unwrap();
+    assert!(Config::build(&cli::Overrides::default(), Some(file.path())).is_err());
 }
 
 #[test]

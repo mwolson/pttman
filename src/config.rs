@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
@@ -11,6 +12,7 @@ use crate::socket;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub all_sources: bool,
+    pub ptt_hold_timeout: Option<Duration>,
     pub source: Option<String>,
     pub start_muted: bool,
 }
@@ -19,6 +21,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             all_sources: false,
+            ptt_hold_timeout: None,
             source: None,
             start_muted: true,
         }
@@ -85,6 +88,14 @@ impl Config {
             }
             "--source" => {
                 self.source = Some(value.to_string());
+            }
+            "--ptt-hold-timeout" => {
+                self.ptt_hold_timeout = parse_optional_duration(value).ok_or_else(|| {
+                    anyhow!(
+                        "--ptt-hold-timeout must be 'off', '0', or a duration like '120s' or '2m' in {}",
+                        path.display()
+                    )
+                })?;
             }
             "--start-muted" => {
                 self.start_muted = parse_bool_strict(value).ok_or_else(|| {
@@ -184,4 +195,34 @@ fn parse_bool_strict(value: &str) -> Option<bool> {
         "false" => Some(false),
         _ => None,
     }
+}
+
+fn parse_optional_duration(value: &str) -> Option<Option<Duration>> {
+    if matches!(value, "false" | "none" | "off" | "0") {
+        return Some(None);
+    }
+    let duration = parse_duration(value)?;
+    if duration.is_zero() {
+        return Some(None);
+    }
+    Some(Some(duration))
+}
+
+fn parse_duration(value: &str) -> Option<Duration> {
+    let (number, millis) = if let Some(number) = value.strip_suffix("ms") {
+        (number, 1)
+    } else if let Some(number) = value.strip_suffix('s') {
+        (number, 1_000)
+    } else if let Some(number) = value.strip_suffix('m') {
+        (number, 60_000)
+    } else if let Some(number) = value.strip_suffix('h') {
+        (number, 3_600_000)
+    } else {
+        (value, 1_000)
+    };
+    if number.is_empty() {
+        return None;
+    }
+    let amount = number.parse::<u64>().ok()?;
+    Some(Duration::from_millis(amount.checked_mul(millis)?))
 }

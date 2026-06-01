@@ -65,6 +65,8 @@ pub struct State {
     pub default_mute: bool,
     pub last_applied_mute: HashMap<String, bool>,
     pub per_source_desired: HashMap<String, bool>,
+    pub ptt_hold_expires_at: Option<Instant>,
+    pub ptt_hold_timeout: Option<Duration>,
     pub sources: Vec<String>,
 }
 
@@ -82,6 +84,8 @@ impl State {
             default_mute: config.start_muted,
             last_applied_mute: HashMap::new(),
             per_source_desired: HashMap::new(),
+            ptt_hold_expires_at: None,
+            ptt_hold_timeout: config.ptt_hold_timeout,
             sources,
         })
     }
@@ -115,6 +119,7 @@ impl State {
             &Overrides::default(),
             config::default_conf_path().as_deref(),
         )?;
+        self.set_ptt_hold_timeout(config.ptt_hold_timeout);
         if let Some(source) = config.source {
             let new_sources = vec![source];
             self.auto_discover = false;
@@ -149,28 +154,60 @@ impl State {
         match action {
             Action::Mute => {
                 self.apply_mute(pactl, &sources, true)?;
+                self.clear_ptt_hold_timeout();
                 for source in sources {
                     self.per_source_desired.insert(source, true);
                 }
             }
             Action::Unmute => {
                 self.apply_mute(pactl, &sources, false)?;
+                self.clear_ptt_hold_timeout();
                 for source in sources {
                     self.per_source_desired.insert(source, false);
                 }
             }
-            Action::Press => self.apply_mute(pactl, &sources, false)?,
-            Action::Release => self.apply_mute(pactl, &sources, true)?,
+            Action::Press => {
+                self.apply_mute(pactl, &sources, false)?;
+                self.arm_ptt_hold_timeout();
+            }
+            Action::Release => {
+                self.apply_mute(pactl, &sources, true)?;
+                self.clear_ptt_hold_timeout();
+            }
             Action::Resync => self.reapply_desired_state(pactl)?,
             Action::Toggle => {
                 let new_mute = sources.iter().any(|source| !self.effective_desired(source));
                 self.apply_mute(pactl, &sources, new_mute)?;
+                self.clear_ptt_hold_timeout();
                 for source in sources {
                     self.per_source_desired.insert(source, new_mute);
                 }
             }
             Action::Reload => self.reload_config(pactl)?,
         }
+        Ok(())
+    }
+
+    pub fn enforce_ptt_hold_timeout(&mut self, pactl: &dyn PactlRunner) -> Result<()> {
+        let Some(expires_at) = self.ptt_hold_expires_at else {
+            return Ok(());
+        };
+        if Instant::now() < expires_at {
+            return Ok(());
+        }
+        let sources = self.sources.clone();
+        if !sources.is_empty() {
+            if let Some(timeout) = self.ptt_hold_timeout {
+                info!(
+                    "PTT hold timeout expired after {}; muting managed sources",
+                    format_duration(timeout)
+                );
+            } else {
+                info!("PTT hold timeout expired; muting managed sources");
+            }
+        }
+        self.apply_mute(pactl, &sources, true)?;
+        self.ptt_hold_expires_at = None;
         Ok(())
     }
 
@@ -223,6 +260,32 @@ impl State {
             );
         }
     }
+
+    fn arm_ptt_hold_timeout(&mut self) {
+        self.ptt_hold_expires_at = self
+            .ptt_hold_timeout
+            .and_then(|timeout| Instant::now().checked_add(timeout));
+        if self.ptt_hold_timeout.is_some() && self.ptt_hold_expires_at.is_none() {
+            warn!("PTT hold timeout is too large to schedule");
+        }
+    }
+
+    fn clear_ptt_hold_timeout(&mut self) {
+        self.ptt_hold_expires_at = None;
+    }
+
+    fn set_ptt_hold_timeout(&mut self, timeout: Option<Duration>) {
+        self.ptt_hold_timeout = timeout;
+        if self.ptt_hold_timeout.is_none() {
+            self.clear_ptt_hold_timeout();
+        }
+        info!(
+            "PTT hold timeout: {}",
+            self.ptt_hold_timeout
+                .map(format_duration)
+                .unwrap_or_else(|| "off".into())
+        );
+    }
 }
 
 pub fn run(
@@ -244,6 +307,13 @@ pub fn run(
     } else if !config.start_muted {
         info!("Initial state: untouched (--no-start-muted)");
     }
+    info!(
+        "PTT hold timeout: {}",
+        config
+            .ptt_hold_timeout
+            .map(format_duration)
+            .unwrap_or_else(|| "off".into())
+    );
 
     let socket_path = socket::socket_path();
     socket::cleanup_socket(&socket_path);
@@ -266,9 +336,14 @@ pub fn run(
         }
         match server.recv(&mut buf) {
             Ok(size) => {
-                let Ok(action) = Action::parse(&buf[..size]) else {
-                    continue;
+                let action = match Action::parse(&buf[..size]) {
+                    Ok(action) => action,
+                    Err(err) => {
+                        warn!("{:#}", err);
+                        continue;
+                    }
                 };
+                info!("Received action: {}", action);
                 let action = coalesce_commands(&server, action, pactl, &state);
                 let mut state = state.lock().expect("state mutex poisoned");
                 if let Err(err) = state.run_action(pactl, action) {
@@ -280,6 +355,10 @@ pub fn run(
                     || err.kind() == std::io::ErrorKind::WouldBlock
                     || err.kind() == std::io::ErrorKind::TimedOut => {}
             Err(err) => warn!("socket receive failed: {}", err),
+        }
+        let mut state = state.lock().expect("state mutex poisoned");
+        if let Err(err) = state.enforce_ptt_hold_timeout(pactl) {
+            warn!("PTT hold timeout failed: {:#}", err);
         }
     }
     socket::cleanup_socket(&socket_path);
@@ -312,6 +391,7 @@ fn coalesce_commands(
         match server.recv(&mut buf) {
             Ok(size) => match Action::parse(&buf[..size]) {
                 Ok(Action::Reload) => {
+                    info!("Received action: reload");
                     let mut state = state.lock().expect("state mutex poisoned");
                     if let Err(err) = state.reload_config(pactl) {
                         warn!(
@@ -320,7 +400,10 @@ fn coalesce_commands(
                         );
                     }
                 }
-                Ok(action) => effective = action,
+                Ok(action) => {
+                    info!("Received action: {}", action);
+                    effective = action;
+                }
                 Err(err) => warn!("{:#}", err),
             },
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -391,5 +474,18 @@ fn refresh_and_reapply(state: &Arc<Mutex<State>>, pactl: &dyn PactlRunner) {
     }
     if let Err(err) = state.reapply_desired_state(pactl) {
         warn!("state reapply failed: {:#}", err);
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    if millis % 3_600_000 == 0 {
+        format!("{}h", millis / 3_600_000)
+    } else if millis % 60_000 == 0 {
+        format!("{}m", millis / 60_000)
+    } else if millis % 1_000 == 0 {
+        format!("{}s", millis / 1_000)
+    } else {
+        format!("{}ms", millis)
     }
 }

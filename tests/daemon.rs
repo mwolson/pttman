@@ -1,6 +1,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use common::FakePactl;
 use pttman::daemon::{Action, State};
@@ -13,6 +14,8 @@ fn state() -> State {
         default_mute: true,
         last_applied_mute: HashMap::new(),
         per_source_desired: HashMap::new(),
+        ptt_hold_expires_at: None,
+        ptt_hold_timeout: None,
         sources: vec!["src1".into()],
     }
 }
@@ -46,6 +49,35 @@ fn press_does_not_record_preference() {
     state.run_action(&pactl, Action::Press).unwrap();
     assert_eq!(state.per_source_desired.get("src1"), Some(&true));
     assert_eq!(state.last_applied_mute.get("src1"), Some(&false));
+}
+
+#[test]
+fn press_arms_ptt_hold_timeout() {
+    let pactl = FakePactl::default().with_output(&["set-source-mute", "src1", "0"], "");
+    let mut state = state();
+    state.ptt_hold_timeout = Some(Duration::from_secs(120));
+    state.run_action(&pactl, Action::Press).unwrap();
+    assert!(state.ptt_hold_expires_at.is_some());
+}
+
+#[test]
+fn release_clears_ptt_hold_timeout() {
+    let pactl = FakePactl::default().with_output(&["set-source-mute", "src1", "1"], "");
+    let mut state = state();
+    state.ptt_hold_expires_at = Some(Instant::now() + Duration::from_secs(120));
+    state.run_action(&pactl, Action::Release).unwrap();
+    assert!(state.ptt_hold_expires_at.is_none());
+}
+
+#[test]
+fn ptt_hold_timeout_mutes_and_clears_expired_press() {
+    let pactl = FakePactl::default().with_output(&["set-source-mute", "src1", "1"], "");
+    let mut state = state();
+    state.ptt_hold_timeout = Some(Duration::from_secs(120));
+    state.ptt_hold_expires_at = Some(Instant::now() - Duration::from_secs(1));
+    state.enforce_ptt_hold_timeout(&pactl).unwrap();
+    assert_eq!(state.last_applied_mute.get("src1"), Some(&true));
+    assert!(state.ptt_hold_expires_at.is_none());
 }
 
 #[test]

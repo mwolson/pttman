@@ -94,17 +94,35 @@ These flags apply to the daemon and action commands:
 
 ```text
 --source=alsa_input.usb-046d_BRIO-03.pro-input-0
+--ptt-hold-timeout=2m
 ```
 
 Supported flags:
 
 - `--source=NAME` controls only this source
 - `--all-sources=true` controls all sources
+- `--ptt-hold-timeout=off|DURATION` sets the maximum time a `press` command may
+  keep the mic unmuted before the daemon mutes it. It defaults to `off`.
+  Durations accept `ms`, `s`, `m`, and `h` suffixes. Bare numbers are seconds.
 - `--start-muted=true|false` controls whether the daemon mutes managed sources
   at startup
 
 `--source` and `--all-sources=true` are mutually exclusive. Command-line
 arguments always take precedence over the config file.
+
+## Push-to-talk bindings
+
+Use `pttman press` on key down and `pttman release` on key up:
+
+```yaml
+F5:
+  skip_key_event: true
+  press: { launch: ["pttman", "press"] }
+  release: { launch: ["pttman", "release"] }
+```
+
+For missed key-up events, add a timeout such as `--ptt-hold-timeout=2m` to the
+config file.
 
 ## Development
 
