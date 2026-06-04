@@ -441,11 +441,10 @@ fn start_source_watcher(state: Arc<Mutex<State>>) {
                             let reader = std::io::BufReader::new(stdout);
                             use std::io::BufRead;
                             for line in reader.lines().map_while(Result::ok) {
-                                if line.contains("'new' on source")
-                                    || line.contains("'remove' on source")
+                                if is_source_event(&line, "new") || is_source_event(&line, "remove")
                                 {
                                     refresh_and_reapply(&state, &pactl);
-                                } else if line.contains("'change' on source") {
+                                } else if is_source_event(&line, "change") {
                                     state
                                         .lock()
                                         .expect("state mutex poisoned")
@@ -477,6 +476,19 @@ fn refresh_and_reapply(state: &Arc<Mutex<State>>, pactl: &dyn PactlRunner) {
     }
 }
 
+fn is_source_event(line: &str, event: &str) -> bool {
+    let prefix = match event {
+        "change" => "Event 'change' on source",
+        "new" => "Event 'new' on source",
+        "remove" => "Event 'remove' on source",
+        _ => return false,
+    };
+    line == prefix
+        || line
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with(" #"))
+}
+
 fn format_duration(duration: Duration) -> String {
     let millis = duration.as_millis();
     if millis % 3_600_000 == 0 {
@@ -487,5 +499,27 @@ fn format_duration(duration: Duration) -> String {
         format!("{}s", millis / 1_000)
     } else {
         format!("{}ms", millis)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_source_event;
+
+    #[test]
+    fn source_event_matching_excludes_source_outputs() {
+        assert!(is_source_event("Event 'new' on source #8731", "new"));
+        assert!(is_source_event("Event 'remove' on source #8731", "remove"));
+        assert!(is_source_event("Event 'change' on source #8731", "change"));
+
+        assert!(!is_source_event("Event 'new' on source-output #80", "new"));
+        assert!(!is_source_event(
+            "Event 'remove' on source-output #80",
+            "remove"
+        ));
+        assert!(!is_source_event(
+            "Event 'change' on source-output #80",
+            "change"
+        ));
     }
 }
