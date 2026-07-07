@@ -1,6 +1,7 @@
 [Unit]
 Description=Push-to-talk manager
 After=graphical-session.target pipewire.service pipewire-pulse.service wireplumber.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

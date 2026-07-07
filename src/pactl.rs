@@ -16,6 +16,7 @@ impl PactlRunner for RealPactl {
     fn run(&self, args: &[&str]) -> Result<String> {
         let output = Command::new("pactl")
             .args(args)
+            .env("LC_ALL", "C")
             .output()
             .with_context(|| format!("running pactl {}", args.join(" ")))?;
         if !output.status.success() {
@@ -30,7 +31,7 @@ impl PactlRunner for RealPactl {
     }
 
     fn run_ok(&self, args: &[&str]) -> String {
-        match Command::new("pactl").args(args).output() {
+        match Command::new("pactl").args(args).env("LC_ALL", "C").output() {
             Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
             _ => String::new(),
         }

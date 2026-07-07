@@ -57,6 +57,9 @@ impl std::fmt::Display for Action {
     }
 }
 
+const MAX_REVERTS_PER_WINDOW: u32 = 3;
+const REVERT_BACKOFF_WINDOW: Duration = Duration::from_secs(2);
+
 #[derive(Debug, Clone)]
 pub struct State {
     pub auto_discover: bool,
@@ -65,29 +68,35 @@ pub struct State {
     pub default_mute: bool,
     pub last_applied_mute: HashMap<String, bool>,
     pub per_source_desired: HashMap<String, bool>,
+    pub ptt_active: bool,
     pub ptt_hold_expires_at: Option<Instant>,
     pub ptt_hold_timeout: Option<Duration>,
+    pub revert_backoff: HashMap<String, (Instant, u32)>,
     pub sources: Vec<String>,
 }
 
 impl State {
-    pub fn new(
-        config: &config::Config,
-        overrides: &Overrides,
-        pactl: &dyn PactlRunner,
-    ) -> Result<Self> {
-        let sources = config.resolve_sources(pactl)?;
-        Ok(Self {
+    pub fn new(config: &config::Config, overrides: &Overrides, pactl: &dyn PactlRunner) -> Self {
+        let sources = config.resolve_sources(pactl).unwrap_or_else(|err| {
+            warn!(
+                "Failed to list sources at startup, waiting for source events: {:#}",
+                err
+            );
+            Vec::new()
+        });
+        Self {
             auto_discover: config.source.is_none(),
             cli_all_sources: overrides.all_sources,
             cli_source: overrides.source.clone(),
             default_mute: config.start_muted,
             last_applied_mute: HashMap::new(),
             per_source_desired: HashMap::new(),
+            ptt_active: false,
             ptt_hold_expires_at: None,
             ptt_hold_timeout: config.ptt_hold_timeout,
+            revert_backoff: HashMap::new(),
             sources,
-        })
+        }
     }
 
     pub fn effective_desired(&self, source: &str) -> bool {
@@ -140,48 +149,67 @@ impl State {
         sources: &[String],
         mute: bool,
     ) -> Result<()> {
-        if sources.is_empty() {
-            return Ok(());
-        }
+        let mut first_err = None;
         for source in sources {
-            self.last_applied_mute.insert(source.clone(), mute);
+            match pactl::set_mute(pactl, std::slice::from_ref(source), mute) {
+                Ok(()) => {
+                    self.last_applied_mute.insert(source.clone(), mute);
+                }
+                Err(err) => {
+                    warn!("Failed to set mute on {}: {:#}", source, err);
+                    if first_err.is_none() {
+                        first_err = Some(err);
+                    }
+                }
+            }
         }
-        pactl::set_mute(pactl, sources, mute)
+        match first_err {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
 
     pub fn run_action(&mut self, pactl: &dyn PactlRunner, action: Action) -> Result<()> {
+        // Any command ends the revert backoff ("accepting ... until the next
+        // command"), giving the next external fight a fresh revert budget.
+        self.revert_backoff.clear();
         let sources = self.sources.clone();
         match action {
             Action::Mute => {
-                self.apply_mute(pactl, &sources, true)?;
+                self.ptt_active = false;
                 self.clear_ptt_hold_timeout();
-                for source in sources {
-                    self.per_source_desired.insert(source, true);
+                for source in &sources {
+                    self.per_source_desired.insert(source.clone(), true);
                 }
+                self.apply_mute(pactl, &sources, true)?;
             }
             Action::Unmute => {
-                self.apply_mute(pactl, &sources, false)?;
+                self.ptt_active = false;
                 self.clear_ptt_hold_timeout();
-                for source in sources {
-                    self.per_source_desired.insert(source, false);
+                for source in &sources {
+                    self.per_source_desired.insert(source.clone(), false);
                 }
+                self.apply_mute(pactl, &sources, false)?;
             }
             Action::Press => {
-                self.apply_mute(pactl, &sources, false)?;
+                self.ptt_active = true;
                 self.arm_ptt_hold_timeout();
+                self.apply_mute(pactl, &sources, false)?;
             }
             Action::Release => {
-                self.apply_mute(pactl, &sources, true)?;
+                self.ptt_active = false;
                 self.clear_ptt_hold_timeout();
+                self.apply_mute(pactl, &sources, true)?;
             }
             Action::Resync => self.reapply_desired_state(pactl)?,
             Action::Toggle => {
                 let new_mute = sources.iter().any(|source| !self.effective_desired(source));
-                self.apply_mute(pactl, &sources, new_mute)?;
+                self.ptt_active = false;
                 self.clear_ptt_hold_timeout();
-                for source in sources {
-                    self.per_source_desired.insert(source, new_mute);
+                for source in &sources {
+                    self.per_source_desired.insert(source.clone(), new_mute);
                 }
+                self.apply_mute(pactl, &sources, new_mute)?;
             }
             Action::Reload => self.reload_config(pactl)?,
         }
@@ -206,8 +234,9 @@ impl State {
                 info!("PTT hold timeout expired; muting managed sources");
             }
         }
-        self.apply_mute(pactl, &sources, true)?;
+        self.ptt_active = false;
         self.ptt_hold_expires_at = None;
+        self.apply_mute(pactl, &sources, true)?;
         Ok(())
     }
 
@@ -216,7 +245,13 @@ impl State {
         let mut muted = 0;
         let mut unmuted = 0;
         for source in sources {
-            let desired = self.effective_desired(&source);
+            // An active PTT hold overrides the recorded preference so source
+            // churn (e.g. Bluetooth profile flaps) cannot mute mid-hold.
+            let desired = if self.ptt_active {
+                false
+            } else {
+                self.effective_desired(&source)
+            };
             if let Err(err) = self.apply_mute(pactl, &[source], desired) {
                 warn!("Failed to reapply mute state: {:#}", err);
                 continue;
@@ -248,6 +283,15 @@ impl State {
             if last == actual {
                 continue;
             }
+            if self.revert_backoff_exceeded(&source) {
+                warn!(
+                    "External tool keeps changing mute on {}; accepting {} until the next command",
+                    source,
+                    if actual { "muted" } else { "unmuted" }
+                );
+                self.last_applied_mute.insert(source, actual);
+                continue;
+            }
             if let Err(err) = self.apply_mute(pactl, std::slice::from_ref(&source), last) {
                 warn!("Failed to revert external change on {}: {:#}", source, err);
                 self.last_applied_mute.insert(source, actual);
@@ -259,6 +303,19 @@ impl State {
                 if last { "muted" } else { "unmuted" }
             );
         }
+    }
+
+    fn revert_backoff_exceeded(&mut self, source: &str) -> bool {
+        let now = Instant::now();
+        let entry = self
+            .revert_backoff
+            .entry(source.to_string())
+            .or_insert((now, 0));
+        if now.duration_since(entry.0) > REVERT_BACKOFF_WINDOW {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1 > MAX_REVERTS_PER_WINDOW
     }
 
     fn arm_ptt_hold_timeout(&mut self) {
@@ -294,7 +351,14 @@ pub fn run(
     overrides: Overrides,
     sigs: signals::Handles,
 ) -> Result<()> {
-    let mut state = State::new(&config, &overrides, pactl)?;
+    let socket_path = socket::socket_path();
+    if socket::daemon_is_alive(&socket_path) {
+        bail!(
+            "another pttman daemon is already listening on {}",
+            socket_path.display()
+        );
+    }
+    let mut state = State::new(&config, &overrides, pactl);
     if let Some(source) = &config.source {
         info!("Source: {}", source);
     } else {
@@ -315,7 +379,6 @@ pub fn run(
             .unwrap_or_else(|| "off".into())
     );
 
-    let socket_path = socket::socket_path();
     socket::cleanup_socket(&socket_path);
     let server = UnixDatagram::bind(&socket_path)?;
     server.set_read_timeout(Some(Duration::from_millis(250)))?;
@@ -344,10 +407,12 @@ pub fn run(
                     }
                 };
                 info!("Received action: {}", action);
-                let action = coalesce_commands(&server, action, pactl, &state);
+                let actions = coalesce_commands(&server, action, pactl, &state);
                 let mut state = state.lock().expect("state mutex poisoned");
-                if let Err(err) = state.run_action(pactl, action) {
-                    warn!("{:#}", err);
+                for action in actions {
+                    if let Err(err) = state.run_action(pactl, action) {
+                        warn!("{:#}", err);
+                    }
                 }
             }
             Err(err)
@@ -383,8 +448,8 @@ fn coalesce_commands(
     initial: Action,
     pactl: &dyn PactlRunner,
     state: &Arc<Mutex<State>>,
-) -> Action {
-    let mut effective = initial;
+) -> Vec<Action> {
+    let mut pending = vec![initial];
     let _ = server.set_nonblocking(true);
     let mut buf = [0_u8; 64];
     loop {
@@ -402,7 +467,7 @@ fn coalesce_commands(
                 }
                 Ok(action) => {
                     info!("Received action: {}", action);
-                    effective = action;
+                    pending.push(action);
                 }
                 Err(err) => warn!("{:#}", err),
             },
@@ -414,7 +479,23 @@ fn coalesce_commands(
         }
     }
     let _ = server.set_nonblocking(false);
-    effective
+    collapse_ptt_runs(pending)
+}
+
+// Only consecutive press/release edges are interchangeable: they do not touch
+// the recorded preference, so the last edge fully determines the outcome.
+// Other actions must run in order.
+fn collapse_ptt_runs(actions: Vec<Action>) -> Vec<Action> {
+    let mut collapsed: Vec<Action> = Vec::with_capacity(actions.len());
+    for action in actions {
+        let is_ptt_edge = matches!(action, Action::Press | Action::Release);
+        if is_ptt_edge && matches!(collapsed.last(), Some(Action::Press | Action::Release)) {
+            *collapsed.last_mut().expect("checked non-empty") = action;
+        } else {
+            collapsed.push(action);
+        }
+    }
+    collapsed
 }
 
 fn start_source_watcher(state: Arc<Mutex<State>>) {
@@ -428,13 +509,21 @@ fn start_source_watcher(state: Arc<Mutex<State>>) {
                 let started = Instant::now();
                 let output = std::process::Command::new("pactl")
                     .arg("subscribe")
+                    .env("LC_ALL", "C")
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null())
                     .spawn();
                 match output {
                     Ok(mut child) => {
                         if let Some(stdout) = child.stdout.take() {
-                            if !first_connect {
+                            // Refresh even on first connect if startup listing
+                            // failed and left us with no sources to manage.
+                            let no_sources = state
+                                .lock()
+                                .expect("state mutex poisoned")
+                                .sources
+                                .is_empty();
+                            if !first_connect || no_sources {
                                 refresh_and_reapply(&state, &pactl);
                             }
                             first_connect = false;
@@ -504,7 +593,27 @@ fn format_duration(duration: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::is_source_event;
+    use super::{collapse_ptt_runs, is_source_event, Action};
+
+    #[test]
+    fn collapse_ptt_runs_keeps_last_edge_and_preserves_other_actions() {
+        use Action::{Mute, Press, Release, Toggle};
+        assert_eq!(collapse_ptt_runs(vec![Press]), vec![Press]);
+        assert_eq!(collapse_ptt_runs(vec![Press, Release, Press]), vec![Press]);
+        assert_eq!(
+            collapse_ptt_runs(vec![Press, Release, Press, Release]),
+            vec![Release]
+        );
+        assert_eq!(collapse_ptt_runs(vec![Mute, Toggle]), vec![Mute, Toggle]);
+        assert_eq!(
+            collapse_ptt_runs(vec![Press, Mute, Release]),
+            vec![Press, Mute, Release]
+        );
+        assert_eq!(
+            collapse_ptt_runs(vec![Release, Press, Toggle]),
+            vec![Press, Toggle]
+        );
+    }
 
     #[test]
     fn source_event_matching_excludes_source_outputs() {

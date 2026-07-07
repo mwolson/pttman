@@ -22,6 +22,16 @@ pub fn cleanup_socket(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
+pub fn daemon_is_alive(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    match UnixDatagram::unbound() {
+        Ok(probe) => probe.connect(path).is_ok(),
+        Err(_) => false,
+    }
+}
+
 fn effective_uid() -> Option<u32> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
