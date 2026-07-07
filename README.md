@@ -9,6 +9,9 @@ Reliable push-to-talk and mic-mute for PipeWire.
   state.
 - The intended mute state is reapplied after PipeWire source changes.
 - Accidental unmutes from other tools are reverted quickly.
+- When auto-discovering sources, the source list is also re-checked every few
+  seconds, so events lost during an audio-stack restart cannot leave the
+  daemon managing a stale source set.
 
 This is the Rust implementation. The previous Python implementation lives at
 https://github.com/mwolson/pttman-py.

@@ -59,6 +59,10 @@ impl std::fmt::Display for Action {
 
 const MAX_REVERTS_PER_WINDOW: u32 = 3;
 const REVERT_BACKOFF_WINDOW: Duration = Duration::from_secs(2);
+// Safety net for source events lost while `pactl subscribe` reattaches (e.g.
+// sources re-registering during a PipeWire restart): poll the live list so a
+// missed 'new'/'remove' cannot strand the daemon on a stale source set.
+const SOURCE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -305,6 +309,22 @@ impl State {
         }
     }
 
+    pub fn recover_missed_source_events(&mut self, pactl: &dyn PactlRunner) {
+        let before = self.sources.clone();
+        if let Err(err) = self.refresh_sources(pactl) {
+            warn!("periodic source refresh failed: {:#}", err);
+            return;
+        }
+        // Only reapply when the list actually drifted; an unconditional
+        // reapply every tick would re-fight external tools and bypass the
+        // revert backoff.
+        if self.sources != before {
+            if let Err(err) = self.reapply_desired_state(pactl) {
+                warn!("state reapply failed: {:#}", err);
+            }
+        }
+    }
+
     fn revert_backoff_exceeded(&mut self, source: &str) -> bool {
         let now = Instant::now();
         let entry = self
@@ -387,6 +407,7 @@ pub fn run(
     info!("pttman daemon listening on {}", socket_path.display());
 
     let mut buf = [0_u8; 64];
+    let mut next_source_check = Instant::now() + SOURCE_REFRESH_INTERVAL;
     while !sigs.stop_requested() {
         if sigs.take_reload() {
             let mut state = state.lock().expect("state mutex poisoned");
@@ -424,6 +445,10 @@ pub fn run(
         let mut state = state.lock().expect("state mutex poisoned");
         if let Err(err) = state.enforce_ptt_hold_timeout(pactl) {
             warn!("PTT hold timeout failed: {:#}", err);
+        }
+        if Instant::now() >= next_source_check {
+            next_source_check = Instant::now() + SOURCE_REFRESH_INTERVAL;
+            state.recover_missed_source_events(pactl);
         }
     }
     socket::cleanup_socket(&socket_path);

@@ -176,6 +176,73 @@ fn revert_external_change_backs_off_after_repeated_fights() {
 }
 
 #[test]
+fn recover_missed_source_events_adopts_drifted_list_and_reapplies() {
+    let pactl = FakePactl::default()
+        .with_output(
+            &["list", "sources", "short"],
+            "1\tsrc1\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED\n\
+             2\tsrc2\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED\n",
+        )
+        .with_output(&["set-source-mute", "src1", "1"], "")
+        .with_output(&["set-source-mute", "src2", "1"], "");
+    let mut state = state();
+    state.recover_missed_source_events(&pactl);
+    assert_eq!(state.sources, vec!["src1".to_string(), "src2".to_string()]);
+    assert_eq!(state.last_applied_mute.get("src2"), Some(&true));
+}
+
+#[test]
+fn recover_missed_source_events_skips_reapply_when_list_unchanged() {
+    let pactl = FakePactl::default().with_output(
+        &["list", "sources", "short"],
+        "1\tsrc1\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED\n",
+    );
+    let mut state = state();
+    state.recover_missed_source_events(&pactl);
+    assert_eq!(state.sources, vec!["src1".to_string()]);
+    assert!(pactl
+        .calls()
+        .iter()
+        .all(|call| call[0] != "set-source-mute"));
+}
+
+#[test]
+fn recover_missed_source_events_drops_removed_sources() {
+    let pactl = FakePactl::default()
+        .with_output(
+            &["list", "sources", "short"],
+            "2\tsrc2\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED\n",
+        )
+        .with_output(&["set-source-mute", "src2", "1"], "");
+    let mut state = state();
+    state.recover_missed_source_events(&pactl);
+    assert_eq!(state.sources, vec!["src2".to_string()]);
+    assert_eq!(state.last_applied_mute.get("src2"), Some(&true));
+}
+
+#[test]
+fn recover_missed_source_events_keeps_sources_on_refresh_failure() {
+    let pactl = FakePactl::default();
+    let mut state = state();
+    state.recover_missed_source_events(&pactl);
+    assert_eq!(state.sources, vec!["src1".to_string()]);
+    assert!(pactl
+        .calls()
+        .iter()
+        .all(|call| call[0] != "set-source-mute"));
+}
+
+#[test]
+fn recover_missed_source_events_noops_with_fixed_source() {
+    let pactl = FakePactl::default();
+    let mut state = state();
+    state.auto_discover = false;
+    state.recover_missed_source_events(&pactl);
+    assert_eq!(state.sources, vec!["src1".to_string()]);
+    assert!(pactl.calls().is_empty());
+}
+
+#[test]
 fn state_new_starts_empty_when_pactl_unavailable() {
     let pactl = FakePactl::default();
     let config = pttman::config::Config::default();
