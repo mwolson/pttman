@@ -108,7 +108,9 @@ Supported flags:
   at startup
 
 `--source` and `--all-sources=true` are mutually exclusive. Command-line
-arguments always take precedence over the config file.
+arguments always take precedence over the config file. `pttman
+set-default-source` removes any `--all-sources` line when it writes
+`--source`, keeping the config valid.
 
 ## Push-to-talk bindings
 

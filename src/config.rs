@@ -136,14 +136,28 @@ pub fn print_default_source() -> Result<()> {
 
 pub fn set_default_source(source: &str) -> Result<()> {
     let path = default_conf_path().context("cannot determine config path")?;
+    let dropped_all_sources = write_default_source(&path, source)?;
+    println!("Wrote --source={} to {}", source, path.display());
+    if dropped_all_sources {
+        println!("Removed conflicting --all-sources from {}", path.display());
+    }
+    let _ = socket::send_action(Action::Reload);
+    Ok(())
+}
+
+pub fn write_default_source(path: &Path, source: &str) -> Result<bool> {
     let flag_prefix = "--source=";
     let mut lines = Vec::new();
     let mut replaced = false;
+    let mut dropped_all_sources = false;
     if path.exists() {
-        for line in std::fs::read_to_string(&path)?.lines() {
-            if line.trim_start().starts_with(flag_prefix) {
+        for line in std::fs::read_to_string(path)?.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with(flag_prefix) {
                 lines.push(format!("{}{}", flag_prefix, source));
                 replaced = true;
+            } else if trimmed.starts_with("--all-sources=") {
+                dropped_all_sources = true;
             } else {
                 lines.push(line.to_string());
             }
@@ -155,10 +169,18 @@ pub fn set_default_source(source: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, format!("{}\n", lines.join("\n")))?;
-    println!("Wrote {}{} to {}", flag_prefix, source, path.display());
-    let _ = socket::send_action(Action::Reload);
-    Ok(())
+    // Write through symlinks and keep the original permissions; the rename
+    // replaces the inode, so both would otherwise be lost.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let tmp_path = target.with_extension("conf.tmp");
+    std::fs::write(&tmp_path, format!("{}\n", lines.join("\n")))
+        .with_context(|| format!("writing {}", tmp_path.display()))?;
+    if let Ok(meta) = std::fs::metadata(&target) {
+        let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
+    }
+    std::fs::rename(&tmp_path, &target)
+        .with_context(|| format!("renaming {} to {}", tmp_path.display(), target.display()))?;
+    Ok(dropped_all_sources)
 }
 
 pub fn default_conf_path() -> Option<PathBuf> {
