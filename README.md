@@ -13,9 +13,6 @@ Reliable push-to-talk and mic-mute for PipeWire.
   seconds, so events lost during an audio-stack restart cannot leave the
   daemon managing a stale source set.
 
-This is the Rust implementation. The previous Python implementation lives at
-https://github.com/mwolson/pttman-py.
-
 ## Requirements
 
 - PipeWire with PulseAudio compatibility or PulseAudio
