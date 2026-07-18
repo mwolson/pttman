@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 
 use crate::deps;
 
@@ -61,11 +61,20 @@ pub fn is_root() -> bool {
 }
 
 pub fn render_template(template: &str, placeholder: &str) -> Result<String> {
+    let exe_str = service_executable()?;
+    Ok(template.replace(placeholder, &exe_str))
+}
+
+fn service_executable() -> Result<String> {
+    if let Some(exe) = std::env::var_os("SERVICE_EXECUTABLE") {
+        return exe
+            .into_string()
+            .map_err(|_| anyhow!("SERVICE_EXECUTABLE is not valid UTF-8"));
+    }
     let exe = std::env::current_exe()?;
-    let exe_str = exe
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("current exe path is not valid UTF-8"))?;
-    Ok(template.replace(placeholder, exe_str))
+    exe.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("current exe path is not valid UTF-8"))
 }
 
 fn openrc_supports_user() -> bool {
